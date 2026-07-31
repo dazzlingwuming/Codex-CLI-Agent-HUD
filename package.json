@@ -1,0 +1,26 @@
+{
+  "name": "codex-cli-agent-hud",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A terminal-bottom runtime HUD for Codex CLI.",
+  "type": "module",
+  "bin": {
+    "codex-hud": "./src/cli.mjs"
+  },
+  "files": [
+    "src/",
+    "README.md"
+  ],
+  "scripts": {
+    "check": "npm run typecheck && npm test",
+    "test": "node --test",
+    "typecheck": "tsc -p jsconfig.json --noEmit"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.2",
+    "typescript": "^7.0.2"
+  }
+}
