@@ -1,12 +1,41 @@
 # Codex CLI Agent HUD
 
-Codex CLI Agent HUD 在同一个终端窗口底部持续展示当前任务、Todo、完成比例、当前工具和执行阶段。完成一次 `setup` 后，仍然直接输入 `codex`；交互式 Codex 会自动进入 HUD，脚本和非交互子命令继续运行原始 Codex。
+让 Codex CLI 在运行过程中始终拥有一个可见、可交互的底部状态面板。
 
-它通过 Codex 官方 Hooks 收集状态，通过 `tmux` 为 Codex 原始 TUI 和 HUD 分配独立区域，不修改 Codex 核心代码。
+完成一次安装后，日常使用方式仍然是直接输入 `codex`。交互式会话会自动进入 HUD，脚本、管道和非交互子命令则继续调用原始 Codex CLI。
 
-需求来源见 [`doc/初始.md`](doc/初始.md)，目标视觉参考见 [`参考图片/2026-07-31_11-21-37.png`](参考图片/2026-07-31_11-21-37.png)。
+HUD 持续展示当前任务、运行阶段、完成比例、正在执行的动作和 Todo，不需要修改 Codex 源码，也不会解析不稳定的终端画面。
 
-## 工作方式
+## 运行效果
+
+### 自动显示在 Codex 下方
+
+![Codex CLI 自动进入底部 HUD](参考图片/img.png)
+
+### 实时任务、进度与当前动作
+
+![Codex HUD 展示实时任务、进度与 Todo](参考图片/img_1.png)
+
+### 点击展开完整 Todo
+
+![Codex HUD 展开 Todo 列表](参考图片/img_2.png)
+
+### PyCharm Terminal 完整运行效果
+
+![Codex HUD 在 PyCharm Terminal 中运行](参考图片/img_3.png)
+
+## 核心能力
+
+- **直接运行 `codex`**：安装后的交互入口自动启动 HUD，不需要记忆另一条启动命令。
+- **始终位于终端底部**：Codex 保持在上方，HUD 使用独立区域持续显示状态。
+- **真实计划进度**：Todo 和百分比来自 Codex 的 `update_plan`，不会根据文本猜测进度。
+- **可点击 Todo**：收起时保留关键步骤，点击后展开完整列表，再次点击即可收起。
+- **保留滚动历史**：鼠标滚轮进入 tmux copy-mode，可以回看当前 Codex 会话输出。
+- **兼顾嵌入式终端**：针对 JetBrains Terminal 的运行中闪烁启用动画抑制和同步帧输出。
+- **低侵入、可回滚**：Hooks 和 shell 入口都带有明确归属标记，卸载时只删除本项目写入的内容。
+- **本地与脱敏**：不上传运行状态，不保存完整 transcript、工具输出或模型推理。
+
+## 实现方式
 
 ```text
 codex
@@ -20,7 +49,7 @@ codex
 Codex Hooks → 脱敏事件 → 状态归约 → HUD Renderer
 ```
 
-HUD 不解析 Codex 的屏幕输出，也不读取不稳定的 transcript。Todo 和进度只来自 Codex 的 `update_plan`，百分比按 `completed / total` 计算。
+Codex 官方 Hooks 提供结构化生命周期事件，`tmux` 为原始 Codex TUI 和 HUD 分配独立区域。HUD 不解析屏幕输出，也不读取不稳定的 transcript；进度按 `completed / total` 精确计算。
 
 ## 运行环境
 
@@ -42,9 +71,11 @@ HUD 不解析 Codex 的屏幕输出，也不读取不稳定的 transcript。Todo
 
 ## 安装
 
-在本仓库执行：
+克隆仓库并执行：
 
 ```bash
+git clone git@github.com:dazzlingwuming/Codex-CLI-Agent-HUD.git
+cd Codex-CLI-Agent-HUD
 brew install tmux
 npm install
 npm run check
@@ -73,22 +104,20 @@ source ~/.zshrc
 
 ## 使用
 
-```text
+```bash
+# 日常使用：自动进入 Codex + HUD
 codex
+
+# 恢复或分叉 Codex 会话
 codex resume [SESSION_ID]
 codex fork [SESSION_ID]
+
+# 显式启动、检查和维护
 codex-hud run -- [Codex 参数]
 codex-hud doctor
 codex-hud doctor --json
 codex-hud setup
 codex-hud uninstall
-```
-
-示例：
-
-```bash
-# 日常用法：在当前目录启动交互式 Codex + HUD
-codex
 
 # 交互式参数仍然可直接传递
 codex -m gpt-5.6-terra -C /path/to/project
@@ -167,6 +196,8 @@ codex-hud doctor
 ```
 
 自动测试覆盖 Hooks 合并与卸载、shell 入口与回滚、交互/非交互路由、并发/乱序事件、精确进度、凭据脱敏、中文宽度、差量渲染、tmux scrollback、Todo 展开/收起、pane 生命周期、Codex 参数和退出码透传。
+
+当前自动化验证包含 50 个测试。真实 GUI 终端的字体、主题和滚动行为仍可能受终端自身配置影响。
 
 ## 故障排查
 

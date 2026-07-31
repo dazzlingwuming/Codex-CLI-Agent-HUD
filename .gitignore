@@ -3,3 +3,7 @@ coverage/
 .DS_Store
 *.log
 *.tgz
+
+# Local task inputs that are not part of the published project.
+/doc/初始.md
+/参考图片/2026-07-31_11-21-37.png
