@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import fs from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
@@ -110,7 +111,7 @@ export async function runCli(
         io.stdout.write(`Removed ${removedRuns} stale HUD run directories.\n`);
       }
       io.stdout.write(
-        "Open Codex, run /hooks, and trust the Codex HUD hook definition once.\n",
+        "Open Codex, run /hooks, trust the Codex HUD hook definition once, then restart Codex.\n",
       );
       return 0;
     } catch (error) {
@@ -131,7 +132,7 @@ export async function runCli(
         io.stdout.write(`Backup: ${result.backupPath}\n`);
       }
       io.stdout.write(
-        "To remove the command too, run: npm uninstall -g codex-cli-agent-hud\n",
+        "To remove the command too, run npm uninstall -g codex-cli-agent-hud with the same --prefix used during installation.\n",
       );
       return 0;
     } catch (error) {
@@ -181,9 +182,13 @@ function errorMessage(error) {
   return error instanceof Error ? error.message : String(error);
 }
 
+const entrypointPath =
+  process.argv[1] === undefined
+    ? null
+    : fs.realpathSync.native(process.argv[1]);
 const isEntrypoint =
-  process.argv[1] !== undefined &&
-  import.meta.url === pathToFileURL(process.argv[1]).href;
+  entrypointPath !== null &&
+  import.meta.url === pathToFileURL(entrypointPath).href;
 
 if (isEntrypoint) {
   process.exitCode = await runCli(process.argv.slice(2));

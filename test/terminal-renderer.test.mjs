@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import stringWidth from "string-width";
 
-import { renderHud, selectPlanWindow } from "../src/renderer.mjs";
+import {
+  renderHud,
+  renderRevision,
+  selectPlanWindow,
+} from "../src/renderer.mjs";
 import { createInitialState } from "../src/state.mjs";
 import {
   fitDisplay,
@@ -83,5 +87,51 @@ test("Todo window stays within plan bounds", () => {
   assert.deepEqual(
     selectPlanWindow(plan, 3).items.map((item) => item.step),
     ["3", "4", "5"],
+  );
+});
+
+test("renderer revision changes only for visible frame inputs", () => {
+  const initial = renderRevision({
+    eventCount: 2,
+    height: 6,
+    now: 1_100,
+    width: 100,
+  });
+
+  assert.equal(
+    renderRevision({
+      eventCount: 2,
+      height: 6,
+      now: 1_999,
+      width: 100,
+    }),
+    initial,
+  );
+  assert.notEqual(
+    renderRevision({
+      eventCount: 3,
+      height: 6,
+      now: 1_999,
+      width: 100,
+    }),
+    initial,
+  );
+  assert.notEqual(
+    renderRevision({
+      eventCount: 2,
+      height: 6,
+      now: 2_000,
+      width: 100,
+    }),
+    initial,
+  );
+  assert.notEqual(
+    renderRevision({
+      eventCount: 2,
+      height: 3,
+      now: 1_999,
+      width: 79,
+    }),
+    initial,
   );
 });

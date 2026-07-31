@@ -211,6 +211,23 @@ export function replayNewEvents(runDirectory, state, seen) {
 }
 
 /**
+ * Build the smallest revision key that can change the visible HUD.
+ *
+ * Event files are still polled more frequently than once per second, while the
+ * elapsed-time display advances only on whole-second boundaries.
+ *
+ * @param {{eventCount: number, width: number, height: number, now: number}} input
+ */
+export function renderRevision({
+  eventCount,
+  width,
+  height,
+  now,
+}) {
+  return `${eventCount}:${width}:${height}:${Math.floor(now / 1_000)}`;
+}
+
+/**
  * @param {{
  *   runDirectory: string,
  *   env?: NodeJS.ProcessEnv,
@@ -244,7 +261,7 @@ export async function runRenderer({
   });
   const seen = new Set();
   let stopped = false;
-  let rendering = false;
+  let previousRevision;
 
   const stop = () => {
     stopped = true;
@@ -256,16 +273,26 @@ export async function runRenderer({
   stdout.write("\u001b[?25l\u001b[2J");
   try {
     while (!stopped) {
-      if (!rendering) {
-        rendering = true;
-        state = replayNewEvents(runDirectory, state, seen);
+      state = replayNewEvents(runDirectory, state, seen);
+      const now = Date.now();
+      const height = stdout.rows || 3;
+      const width = stdout.columns || 80;
+      const revision = renderRevision({
+        eventCount: seen.size,
+        height,
+        now,
+        width,
+      });
+
+      if (revision !== previousRevision) {
         const frame = renderHud(state, {
           color: env.NO_COLOR === undefined,
-          height: stdout.rows || 3,
-          width: stdout.columns || 80,
+          height,
+          now,
+          width,
         });
         stdout.write(`\u001b[H${frame.join("\r\n")}\u001b[J`);
-        rendering = false;
+        previousRevision = revision;
       }
       await delay(intervalMs);
     }

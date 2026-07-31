@@ -1,5 +1,10 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import {
   VERSION,
@@ -59,4 +64,16 @@ test("the public delimiter is removed before forwarding Codex arguments", () => 
     "-m",
     "gpt-test",
   ]);
+});
+
+test("CLI executes when launched through an npm-style symlink", (context) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "codex-hud-bin-"));
+  context.after(() => fs.rmSync(directory, { recursive: true }));
+  const source = fileURLToPath(new URL("../src/cli.mjs", import.meta.url));
+  const link = path.join(directory, "codex-hud");
+  fs.symlinkSync(source, link);
+
+  const result = spawnSync(link, ["--version"], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, `${VERSION}\n`);
 });
