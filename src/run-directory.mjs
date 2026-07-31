@@ -36,6 +36,7 @@ export function createRunDirectory({
 
   const runDirectory = path.join(root, `run-${launchId}`);
   fs.mkdirSync(runDirectory, { mode: 0o700 });
+  fs.mkdirSync(path.join(runDirectory, "controls"), { mode: 0o700 });
   fs.mkdirSync(path.join(runDirectory, "events"), { mode: 0o700 });
   writeJsonAtomic(path.join(runDirectory, "meta.json"), {
     cwd,
@@ -80,6 +81,7 @@ export function validateRunDirectory(runDirectory, env = process.env) {
     return (
       meta !== null &&
       meta.magic === RUN_DIRECTORY_MAGIC &&
+      fs.statSync(path.join(candidate, "controls")).isDirectory() &&
       fs.statSync(path.join(candidate, "events")).isDirectory()
     );
   } catch {
@@ -112,15 +114,43 @@ export function writeEventAtomic(
  * @returns {Array<{name: string, event: Record<string, any>}>}
  */
 export function readEventFiles(runDirectory) {
-  const eventsDirectory = path.join(runDirectory, "events");
-  return fs
-    .readdirSync(eventsDirectory)
-    .filter((name) => name.endsWith(".json"))
-    .sort()
-    .flatMap((name) => {
-      const event = readJson(path.join(eventsDirectory, name));
-      return event ? [{ name, event }] : [];
-    });
+  return readJsonDirectory(path.join(runDirectory, "events")).map(
+    ({ name, value }) => ({ event: value, name }),
+  );
+}
+
+/**
+ * @param {string} runDirectory
+ * @param {Record<string, any>} control
+ * @param {NodeJS.ProcessEnv} env
+ */
+export function writeControlAtomic(
+  runDirectory,
+  control,
+  env = process.env,
+) {
+  if (
+    !validateRunDirectory(runDirectory, env) ||
+    typeof control.observedAtMs !== "number" ||
+    typeof control.kind !== "string"
+  ) {
+    return false;
+  }
+
+  const controlsDirectory = path.join(runDirectory, "controls");
+  const name = `${String(control.observedAtMs).padStart(16, "0")}-${process.pid}-${randomUUID()}.json`;
+  writeJsonAtomic(path.join(controlsDirectory, name), control);
+  return true;
+}
+
+/**
+ * @param {string} runDirectory
+ * @returns {Array<{name: string, control: Record<string, any>}>}
+ */
+export function readControlFiles(runDirectory) {
+  return readJsonDirectory(path.join(runDirectory, "controls")).map(
+    ({ name, value }) => ({ control: value, name }),
+  );
 }
 
 /**
@@ -270,6 +300,21 @@ function readJson(filename) {
   } catch {
     return null;
   }
+}
+
+/**
+ * @param {string} directory
+ * @returns {Array<{name: string, value: Record<string, any>}>}
+ */
+function readJsonDirectory(directory) {
+  return fs
+    .readdirSync(directory)
+    .filter((name) => name.endsWith(".json"))
+    .sort()
+    .flatMap((name) => {
+      const value = readJson(path.join(directory, name));
+      return value ? [{ name, value }] : [];
+    });
 }
 
 /**

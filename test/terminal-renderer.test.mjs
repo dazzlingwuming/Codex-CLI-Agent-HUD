@@ -3,6 +3,7 @@ import test from "node:test";
 import stringWidth from "string-width";
 
 import {
+  diffFrame,
   renderHud,
   renderRevision,
   selectPlanWindow,
@@ -56,7 +57,34 @@ test("full HUD renders exact progress and an active-centered Todo window", () =>
   assert.match(frame[1], /2\/5 40%/u);
   assert.match(frame[2], /npm test/u);
   assert.match(frame.join("\n"), /● Test/u);
-  assert.match(frame.join("\n"), /\(\+2 more\)/u);
+  assert.match(frame.join("\n"), /\(\+2 more · click\)/u);
+});
+
+test("expanded HUD shows every Todo and a clickable collapse affordance", () => {
+  const state = createInitialState({
+    cwd: "/workspace",
+    launchId: "launch",
+    startedAtMs: 0,
+  });
+  state.plan = Array.from({ length: 5 }, (_, index) => ({
+    status: index < 2 ? "completed" : "pending",
+    step: `Todo ${index + 1}`,
+  }));
+  state.hasPlan = true;
+
+  const frame = renderHud(state, {
+    color: false,
+    expanded: true,
+    height: 9,
+    now: 0,
+    width: 100,
+  });
+
+  assert.equal(frame.length, 9);
+  assert.match(frame.join("\n"), /Todo 1/u);
+  assert.match(frame.join("\n"), /Todo 5/u);
+  assert.match(frame[8], /click to collapse/u);
+  assert.doesNotMatch(frame.join("\n"), /\+\d+ more/u);
 });
 
 test("compact HUD uses three information lines", () => {
@@ -127,11 +155,24 @@ test("renderer revision changes only for visible frame inputs", () => {
   );
   assert.notEqual(
     renderRevision({
+      controlCount: 1,
       eventCount: 2,
+      expanded: true,
       height: 3,
       now: 1_999,
       width: 79,
     }),
     initial,
   );
+});
+
+test("frame diff rewrites only changed lines without cursor visibility toggles", () => {
+  const output = diffFrame(
+    ["first", "before", "third"],
+    ["first", "after", "third"],
+  );
+
+  assert.equal(output, "\u001b[2;1H\u001b[2Kafter");
+  assert.doesNotMatch(output, /\?25[lh]/u);
+  assert.doesNotMatch(output, /\[2J/u);
 });

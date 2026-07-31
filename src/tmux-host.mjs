@@ -48,6 +48,40 @@ export function hasStatusLineOverride(args) {
 }
 
 /**
+ * Keep Codex on the primary screen so tmux and the outer terminal can retain
+ * scrollback. An explicit user alternate-screen setting always wins.
+ *
+ * @param {string[]} args
+ */
+export function withScrollableScreen(args) {
+  if (hasAlternateScreenOverride(args)) {
+    return [...args];
+  }
+  return ["--no-alt-screen", ...args];
+}
+
+/**
+ * @param {string[]} args
+ */
+export function hasAlternateScreenOverride(args) {
+  return args.some(
+    (value, index) =>
+      value === "--no-alt-screen" ||
+      value.startsWith("tui.alternate_screen=") ||
+      value.startsWith("--config=tui.alternate_screen=") ||
+      ((value === "-c" || value === "--config") &&
+        args[index + 1]?.startsWith("tui.alternate_screen=")),
+  );
+}
+
+/**
+ * @param {string[]} args
+ */
+export function withHudTuiDefaults(args) {
+  return withNativeStatusLine(withScrollableScreen(args));
+}
+
+/**
  * @param {number} rows
  * @param {number} columns
  */
@@ -58,6 +92,31 @@ export function chooseHudHeight(rows, columns) {
     );
   }
   return rows >= 22 && columns >= 80 ? 6 : 3;
+}
+
+/**
+ * @param {number} rows
+ * @param {number} columns
+ * @param {number} planLength
+ * @param {boolean} expanded
+ */
+export function chooseHudViewHeight(
+  rows,
+  columns,
+  planLength,
+  expanded,
+) {
+  const collapsedHeight = chooseHudHeight(rows, columns);
+  if (!expanded) {
+    return collapsedHeight;
+  }
+
+  const maximumHeight = Math.max(collapsedHeight, rows - 10);
+  if (maximumHeight < 6) {
+    return collapsedHeight;
+  }
+  const requestedHeight = Math.max(6, 4 + Math.max(1, planLength));
+  return Math.min(requestedHeight, maximumHeight);
 }
 
 /**
@@ -88,6 +147,7 @@ export async function runHud({
   }
 
   const launchId = randomUUID();
+  const ownsTmuxServer = !(env.TMUX && env.TMUX_PANE);
   const runDirectory = createRunDirectory({ cwd, env, launchId });
   const launch = {
     codexArgs,
@@ -95,6 +155,7 @@ export async function runHud({
     cwd,
     entryPath: path.resolve(entryPath),
     launchId,
+    ownsTmuxServer,
   };
   writeRunJson(runDirectory, "launch.json", launch, env);
 
@@ -169,6 +230,21 @@ function launchIsolatedTmux({
           "status",
           "off",
           ";",
+          "set-option",
+          "-g",
+          "default-terminal",
+          "tmux-256color",
+          ";",
+          "set-option",
+          "-g",
+          "history-limit",
+          "100000",
+          ";",
+          "set-option",
+          "-g",
+          "mouse",
+          "on",
+          ";",
           "new-session",
           "-s",
           "hud",
@@ -215,6 +291,58 @@ export function isolatedTmuxSocketPath(
     `tmux-${uid}`,
     socketName,
   );
+}
+
+/**
+ * Resize the renderer pane to the collapsed or expanded Todo layout.
+ *
+ * @param {{
+ *   expanded: boolean,
+ *   planLength: number,
+ *   env?: NodeJS.ProcessEnv
+ * }} options
+ */
+export function resizeHudPane({
+  expanded,
+  planLength,
+  env = process.env,
+}) {
+  if (!env.TMUX_PANE) {
+    return null;
+  }
+
+  const [rows, columns, currentHeight] = tmuxOutput(
+    [
+      "display-message",
+      "-p",
+      "-t",
+      env.TMUX_PANE,
+      "#{window_height} #{window_width} #{pane_height}",
+    ],
+    env,
+  )
+    .trim()
+    .split(/\s+/u)
+    .map(Number);
+  const targetHeight = chooseHudViewHeight(
+    rows,
+    columns,
+    planLength,
+    expanded,
+  );
+  if (currentHeight !== targetHeight) {
+    tmuxChecked(
+      [
+        "resize-pane",
+        "-t",
+        env.TMUX_PANE,
+        "-y",
+        String(targetHeight),
+      ],
+      env,
+    );
+  }
+  return targetHeight;
 }
 
 /**
@@ -281,8 +409,24 @@ export async function runInsideTmux({
     ["display-message", "-p", "-t", env.TMUX_PANE, "#{session_id}"],
     env,
   ).trim();
+  const interactionSnapshot =
+    launch.ownsTmuxServer === false
+      ? snapshotTmuxInteraction(sessionId, env.TMUX_PANE, env)
+      : null;
 
   tmuxChecked(["set-option", "-t", sessionId, "status", "off"], env);
+  tmuxChecked(["set-option", "-t", sessionId, "mouse", "on"], env);
+  tmuxChecked(
+    [
+      "set-option",
+      "-w",
+      "-t",
+      env.TMUX_PANE,
+      "history-limit",
+      "100000",
+    ],
+    env,
+  );
   tmuxChecked(["set-option", "-t", sessionId, "remain-on-exit", "off"], env);
   tmuxChecked(["select-pane", "-t", env.TMUX_PANE, "-T", "Codex"], env);
 
@@ -311,12 +455,20 @@ export async function runInsideTmux({
     env,
   ).trim();
   tmuxChecked(["select-pane", "-t", hudPane, "-T", "Codex HUD"], env);
+  tmuxChecked(
+    todoMouseBinding({
+      entryPath: launch.entryPath,
+      hudPane,
+      runDirectory,
+    }),
+    env,
+  );
   tmuxChecked(["select-pane", "-t", env.TMUX_PANE], env);
 
   let exitCode = 2;
   try {
     exitCode = await runCodexChild({
-      args: withNativeStatusLine(
+      args: withHudTuiDefaults(
         launch.codexArgs.filter((value) => typeof value === "string"),
       ),
       codexBin: launch.codexBin,
@@ -330,8 +482,55 @@ export async function runInsideTmux({
       env,
       stdio: "ignore",
     });
+    if (interactionSnapshot) {
+      try {
+        restoreTmuxInteraction(
+          interactionSnapshot,
+          sessionId,
+          env.TMUX_PANE,
+          env,
+        );
+      } catch (error) {
+        stderr.write(
+          `codex-hud: tmux interaction restore degraded: ${errorMessage(error)}\n`,
+        );
+      }
+    }
     writeRunJson(runDirectory, "exit.json", { code: exitCode }, env);
   }
+}
+
+/**
+ * @param {{
+ *   entryPath: string,
+ *   hudPane: string,
+ *   runDirectory: string,
+ *   nodePath?: string
+ * }} options
+ */
+export function todoMouseBinding({
+  entryPath,
+  hudPane,
+  runDirectory,
+  nodePath = process.execPath,
+}) {
+  const toggleCommand = [
+    quoteShellArgument(nodePath),
+    quoteShellArgument(entryPath),
+    "__toggle",
+    quoteShellArgument(runDirectory),
+  ].join(" ");
+  return [
+    "bind-key",
+    "-T",
+    "root",
+    "MouseDown1Pane",
+    "if-shell",
+    "-F",
+    `#{==:#{mouse_pane},${hudPane}}`,
+    `run-shell ${quoteShellArgument(toggleCommand)}`,
+    "select-pane -t = \\; send-keys -M",
+  ];
 }
 
 /**
@@ -414,4 +613,92 @@ function tmuxOutput(args, env) {
  */
 function tmuxChecked(args, env) {
   tmuxOutput(args, env);
+}
+
+/**
+ * @param {string} sessionId
+ * @param {string} paneId
+ * @param {NodeJS.ProcessEnv} env
+ */
+function snapshotTmuxInteraction(sessionId, paneId, env) {
+  return {
+    historyLimit: tmuxOutput(
+      ["show-options", "-wv", "-t", paneId, "history-limit"],
+      env,
+    ).trim(),
+    mouse: tmuxOutput(
+      ["show-options", "-v", "-t", sessionId, "mouse"],
+      env,
+    ).trim(),
+    mouseBinding: tmuxKeyBinding(
+      "root",
+      "MouseDown1Pane",
+      env,
+    ),
+  };
+}
+
+/**
+ * @param {{historyLimit: string, mouse: string, mouseBinding: string | null}} snapshot
+ * @param {string} sessionId
+ * @param {string} paneId
+ * @param {NodeJS.ProcessEnv} env
+ */
+function restoreTmuxInteraction(
+  snapshot,
+  sessionId,
+  paneId,
+  env,
+) {
+  tmuxChecked(
+    ["set-option", "-t", sessionId, "mouse", snapshot.mouse],
+    env,
+  );
+  tmuxChecked(
+    [
+      "set-option",
+      "-w",
+      "-t",
+      paneId,
+      "history-limit",
+      snapshot.historyLimit,
+    ],
+    env,
+  );
+  tmuxChecked(
+    ["unbind-key", "-T", "root", "MouseDown1Pane"],
+    env,
+  );
+  if (snapshot.mouseBinding) {
+    const restored = spawnSync("tmux", ["source-file", "-"], {
+      encoding: "utf8",
+      env,
+      input: snapshot.mouseBinding,
+    });
+    if (restored.status !== 0) {
+      throw new Error(
+        `tmux mouse binding restore failed: ${(restored.stderr || restored.error?.message || "unknown error").trim()}`,
+      );
+    }
+  }
+}
+
+/**
+ * @param {string} table
+ * @param {string} key
+ * @param {NodeJS.ProcessEnv} env
+ */
+function tmuxKeyBinding(table, key, env) {
+  return (
+    tmuxOutput(["list-keys", "-T", table], env)
+      .split(/\r?\n/u)
+      .find((line) => line.trim().split(/\s+/u).includes(key)) ?? null
+  );
+}
+
+/**
+ * @param {unknown} error
+ */
+function errorMessage(error) {
+  return error instanceof Error ? error.message : String(error);
 }

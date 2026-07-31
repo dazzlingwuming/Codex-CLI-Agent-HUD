@@ -1,4 +1,5 @@
 import {
+  readControlFiles,
   readEventFiles,
   readRunMeta,
   validateRunDirectory,
@@ -12,6 +13,7 @@ import {
   fitDisplay,
   formatDuration,
 } from "./terminal.mjs";
+import { resizeHudPane } from "./tmux-host.mjs";
 
 const ANSI = {
   boldCyan: "\u001b[1;36m",
@@ -23,7 +25,7 @@ const ANSI = {
 
 /**
  * @param {ReturnType<typeof createInitialState>} state
- * @param {{width: number, height: number, color?: boolean, now?: number}} options
+ * @param {{width: number, height: number, color?: boolean, expanded?: boolean, now?: number}} options
  */
 export function renderHud(
   state,
@@ -31,14 +33,16 @@ export function renderHud(
     width,
     height,
     color = true,
+    expanded = false,
     now = Date.now(),
   },
 ) {
   const safeWidth = Math.max(1, width);
   const safeHeight = Math.max(1, height);
-  const full = safeHeight >= 6 && safeWidth >= 80;
+  const full =
+    safeHeight >= 6 && safeWidth >= (expanded ? 50 : 80);
   const lines = full
-    ? renderFull(state, safeWidth, now)
+    ? renderFull(state, safeWidth, safeHeight, now, expanded)
     : renderCompact(state, safeWidth, now);
 
   while (lines.length < safeHeight) {
@@ -53,36 +57,51 @@ export function renderHud(
 /**
  * @param {ReturnType<typeof createInitialState>} state
  * @param {number} width
+ * @param {number} height
  * @param {number} now
+ * @param {boolean} expanded
  */
-function renderFull(state, width, now) {
+function renderFull(state, width, height, now, expanded) {
   const progress = progressText(state.plan);
   const phase = `${state.phaseInferred ? "~" : ""}${state.phase}`;
   const duration = formatDuration(now - state.startedAtMs);
   const task = state.task ?? "Waiting for first prompt";
-  const plan = selectPlanWindow(state.plan, 3);
+  const planLimit = expanded ? Math.max(1, height - 4) : 3;
+  const plan = selectPlanWindow(state.plan, planLimit);
   const planLines =
     plan.items.length === 0
       ? ["Todo     — No plan provided"]
       : plan.items.map((item, index) => {
           const label = index === 0 ? "Todo    " : "        ";
           const suffix =
-            index === plan.items.length - 1 && plan.hidden > 0
-              ? `  (+${plan.hidden} more)`
+            !expanded &&
+            index === plan.items.length - 1 &&
+            plan.hidden > 0
+              ? `  (+${plan.hidden} more · click)`
               : "";
           return `${label} ${planSymbol(item.status)} ${item.step}${suffix}`;
         });
 
-  while (planLines.length < 3) {
-    planLines.push("");
+  if (!expanded) {
+    while (planLines.length < 3) {
+      planLines.push("");
+    }
   }
 
-  return [
+  const lines = [
     `Codex HUD  Task: ${task}`,
     `Status     ${phase} · ${progress} · ${duration}`,
     `Current    ${state.currentAction}`,
     ...planLines,
-  ].map((line) => fitDisplay(line, width));
+  ];
+  if (expanded) {
+    lines.push(
+      plan.hidden > 0
+        ? `         ▲ click to collapse · ${plan.hidden} hidden by terminal height`
+        : "         ▲ click to collapse",
+    );
+  }
+  return lines.map((line) => fitDisplay(line, width));
 }
 
 /**
@@ -211,20 +230,61 @@ export function replayNewEvents(runDirectory, state, seen) {
 }
 
 /**
+ * @param {string} runDirectory
+ * @param {Set<string>} seen
+ * @param {boolean} expanded
+ */
+export function replayNewControls(runDirectory, seen, expanded) {
+  let next = expanded;
+  for (const { name, control } of readControlFiles(runDirectory)) {
+    if (seen.has(name)) {
+      continue;
+    }
+    seen.add(name);
+    if (
+      control.version === 1 &&
+      control.kind === "todo.toggle" &&
+      typeof control.observedAtMs === "number"
+    ) {
+      next = !next;
+    }
+  }
+  return next;
+}
+
+/**
  * Build the smallest revision key that can change the visible HUD.
  *
  * Event files are still polled more frequently than once per second, while the
  * elapsed-time display advances only on whole-second boundaries.
  *
- * @param {{eventCount: number, width: number, height: number, now: number}} input
+ * @param {{eventCount: number, controlCount?: number, expanded?: boolean, width: number, height: number, now: number}} input
  */
 export function renderRevision({
   eventCount,
+  controlCount = 0,
+  expanded = false,
   width,
   height,
   now,
 }) {
-  return `${eventCount}:${width}:${height}:${Math.floor(now / 1_000)}`;
+  return `${eventCount}:${controlCount}:${expanded}:${width}:${height}:${Math.floor(now / 1_000)}`;
+}
+
+/**
+ * Render only lines whose final display content changed.
+ *
+ * @param {string[] | undefined} previous
+ * @param {string[]} next
+ */
+export function diffFrame(previous, next) {
+  return next
+    .flatMap((line, index) =>
+      previous?.[index] === line
+        ? []
+        : [`\u001b[${index + 1};1H\u001b[2K${line}`],
+    )
+    .join("");
 }
 
 /**
@@ -232,7 +292,8 @@ export function renderRevision({
  *   runDirectory: string,
  *   env?: NodeJS.ProcessEnv,
  *   stdout?: NodeJS.WriteStream,
- *   intervalMs?: number
+ *   intervalMs?: number,
+ *   resize?: typeof resizeHudPane
  * }} options
  */
 export async function runRenderer({
@@ -240,6 +301,7 @@ export async function runRenderer({
   env = process.env,
   stdout = process.stdout,
   intervalMs = 100,
+  resize = resizeHudPane,
 }) {
   if (!validateRunDirectory(runDirectory, env)) {
     throw new Error("HUD run directory is invalid or no longer available.");
@@ -259,7 +321,11 @@ export async function runRenderer({
     launchId: meta.launchId,
     startedAtMs: meta.startedAtMs,
   });
-  const seen = new Set();
+  const seenControls = new Set();
+  const seenEvents = new Set();
+  let expanded = false;
+  let previousFrame;
+  let previousLayoutRevision;
   let stopped = false;
   let previousRevision;
 
@@ -270,15 +336,37 @@ export async function runRenderer({
   process.once("SIGTERM", stop);
   process.once("SIGHUP", stop);
 
-  stdout.write("\u001b[?25l\u001b[2J");
+  stdout.write("\u001b[2J");
   try {
     while (!stopped) {
-      state = replayNewEvents(runDirectory, state, seen);
+      state = replayNewEvents(runDirectory, state, seenEvents);
+      expanded = replayNewControls(
+        runDirectory,
+        seenControls,
+        expanded,
+      );
+
+      const layoutRevision = `${expanded}:${state.plan.length}`;
+      if (layoutRevision !== previousLayoutRevision) {
+        try {
+          resize({
+            env,
+            expanded,
+            planLength: state.plan.length,
+          });
+        } catch {
+          // A resize failure degrades expansion without stopping the HUD.
+        }
+        previousLayoutRevision = layoutRevision;
+      }
+
       const now = Date.now();
       const height = stdout.rows || 3;
       const width = stdout.columns || 80;
       const revision = renderRevision({
-        eventCount: seen.size,
+        controlCount: seenControls.size,
+        eventCount: seenEvents.size,
+        expanded,
         height,
         now,
         width,
@@ -287,17 +375,21 @@ export async function runRenderer({
       if (revision !== previousRevision) {
         const frame = renderHud(state, {
           color: env.NO_COLOR === undefined,
+          expanded,
           height,
           now,
           width,
         });
-        stdout.write(`\u001b[H${frame.join("\r\n")}\u001b[J`);
+        const output = diffFrame(previousFrame, frame);
+        if (output) {
+          stdout.write(output);
+        }
+        previousFrame = frame;
         previousRevision = revision;
       }
       await delay(intervalMs);
     }
   } finally {
-    stdout.write("\u001b[?25h");
     process.removeListener("SIGINT", stop);
     process.removeListener("SIGTERM", stop);
     process.removeListener("SIGHUP", stop);

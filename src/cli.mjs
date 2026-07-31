@@ -8,6 +8,10 @@ import {
   doctorExitCode,
   formatDoctorText,
 } from "./doctor.mjs";
+import {
+  runOriginalCodex,
+  shouldUseHudForCodex,
+} from "./codex-routing.mjs";
 import { runHook } from "./hook-runner.mjs";
 import {
   codexHome,
@@ -17,8 +21,13 @@ import {
 import { runRenderer } from "./renderer.mjs";
 import {
   cleanupStaleRuns,
+  writeControlAtomic,
   writeRunJson,
 } from "./run-directory.mjs";
+import {
+  setupShellIntegration,
+  uninstallShellIntegration,
+} from "./shell-integration.mjs";
 import {
   runHud,
   runInsideTmux,
@@ -30,6 +39,7 @@ export function helpText() {
   return `Codex CLI Agent HUD ${VERSION}
 
 Usage:
+  codex                    Start interactive Codex with HUD after setup
   codex-hud
   codex-hud run -- [codex options]
   codex-hud setup
@@ -65,6 +75,28 @@ export async function runCli(
     return runHook();
   }
 
+  if (command === "__toggle") {
+    const runDirectory = argv[1];
+    if (!runDirectory) {
+      return 2;
+    }
+    return writeControlAtomic(runDirectory, {
+      kind: "todo.toggle",
+      observedAtMs: Date.now(),
+      version: 1,
+    })
+      ? 0
+      : 2;
+  }
+
+  if (command === "__codex") {
+    const codexArgs = forwardedArguments(argv.slice(1));
+    if (!shouldUseHudForCodex(codexArgs)) {
+      return runOriginalCodex(codexArgs, { stderr: io.stderr });
+    }
+    return runHudSafely(codexArgs, io);
+  }
+
   if (command === "__render") {
     const runDirectory = argv[1];
     if (!runDirectory) {
@@ -94,24 +126,33 @@ export async function runCli(
 
   if (command === "setup") {
     try {
-      const result = setupHooks({
+      const hooksResult = setupHooks({
         configHome: codexHome(),
         entryPath: fileURLToPath(import.meta.url),
       });
+      const shellResult = setupShellIntegration();
       io.stdout.write(
-        result.changed
-          ? `Installed Codex HUD hooks in ${result.hooksPath}.\n`
-          : `Codex HUD hooks are already current in ${result.hooksPath}.\n`,
+        hooksResult.changed
+          ? `Installed Codex HUD hooks in ${hooksResult.hooksPath}.\n`
+          : `Codex HUD hooks are already current in ${hooksResult.hooksPath}.\n`,
       );
-      if (result.backupPath) {
-        io.stdout.write(`Backup: ${result.backupPath}\n`);
+      if (hooksResult.backupPath) {
+        io.stdout.write(`Hooks backup: ${hooksResult.backupPath}\n`);
+      }
+      io.stdout.write(
+        shellResult.changed
+          ? `Installed the interactive codex entry in ${shellResult.rcPath}.\n`
+          : `The interactive codex entry is already current in ${shellResult.rcPath}.\n`,
+      );
+      if (shellResult.backupPath) {
+        io.stdout.write(`Shell backup: ${shellResult.backupPath}\n`);
       }
       const removedRuns = cleanupStaleRuns();
       if (removedRuns > 0) {
         io.stdout.write(`Removed ${removedRuns} stale HUD run directories.\n`);
       }
       io.stdout.write(
-        "Open Codex, run /hooks, trust the Codex HUD hook definition once, then restart Codex.\n",
+        "Open a new terminal (or source ~/.zshrc), run codex, then use /hooks to trust the HUD handlers once.\n",
       );
       return 0;
     } catch (error) {
@@ -122,14 +163,23 @@ export async function runCli(
 
   if (command === "uninstall") {
     try {
-      const result = uninstallHooks({ configHome: codexHome() });
+      const shellResult = uninstallShellIntegration();
+      const hooksResult = uninstallHooks({ configHome: codexHome() });
       io.stdout.write(
-        result.changed
-          ? `Removed Codex HUD hooks from ${result.hooksPath}.\n`
-          : `No Codex HUD hooks were found in ${result.hooksPath}.\n`,
+        hooksResult.changed
+          ? `Removed Codex HUD hooks from ${hooksResult.hooksPath}.\n`
+          : `No Codex HUD hooks were found in ${hooksResult.hooksPath}.\n`,
       );
-      if (result.backupPath) {
-        io.stdout.write(`Backup: ${result.backupPath}\n`);
+      if (hooksResult.backupPath) {
+        io.stdout.write(`Hooks backup: ${hooksResult.backupPath}\n`);
+      }
+      io.stdout.write(
+        shellResult.changed
+          ? `Removed the interactive codex entry from ${shellResult.rcPath}.\n`
+          : `No interactive codex entry was found in ${shellResult.rcPath}.\n`,
+      );
+      if (shellResult.backupPath) {
+        io.stdout.write(`Shell backup: ${shellResult.backupPath}\n`);
       }
       io.stdout.write(
         "To remove the command too, run npm uninstall -g codex-cli-agent-hud with the same --prefix used during installation.\n",
@@ -155,6 +205,14 @@ export async function runCli(
     command === "run"
       ? forwardedArguments(argv.slice(1))
       : forwardedArguments(argv);
+  return runHudSafely(codexArgs, io);
+}
+
+/**
+ * @param {string[]} codexArgs
+ * @param {{stdout: {write(value: string): unknown}, stderr: {write(value: string): unknown}}} io
+ */
+async function runHudSafely(codexArgs, io) {
   try {
     return await runHud({
       codexArgs,

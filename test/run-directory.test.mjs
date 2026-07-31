@@ -9,10 +9,12 @@ import {
   cleanupStaleRuns,
   consumeRunJson,
   createRunDirectory,
+  readControlFiles,
   readEventFiles,
   readRunJson,
   removeRunDirectory,
   validateRunDirectory,
+  writeControlAtomic,
   writeEventAtomic,
   writeRunJson,
 } from "../src/run-directory.mjs";
@@ -30,6 +32,10 @@ test("run directories and event files are private and scoped", (context) => {
   assert.equal(validateRunDirectory(runDirectory, env), true);
   assert.equal(fs.statSync(runDirectory).mode & 0o777, 0o700);
   assert.equal(
+    fs.statSync(path.join(runDirectory, "controls")).mode & 0o777,
+    0o700,
+  );
+  assert.equal(
     writeEventAtomic(
       runDirectory,
       { id: "event", kind: "turn.stop", observedAtMs: 2_000 },
@@ -42,6 +48,27 @@ test("run directories and event files are private and scoped", (context) => {
   assert.equal(files[0].event.kind, "turn.stop");
   assert.equal(
     fs.statSync(path.join(runDirectory, "events", files[0].name)).mode & 0o777,
+    0o600,
+  );
+  assert.equal(
+    writeControlAtomic(
+      runDirectory,
+      {
+        kind: "todo.toggle",
+        observedAtMs: 2_500,
+        version: 1,
+      },
+      env,
+    ),
+    true,
+  );
+  const controls = readControlFiles(runDirectory);
+  assert.equal(controls.length, 1);
+  assert.equal(controls[0].control.kind, "todo.toggle");
+  assert.equal(
+    fs.statSync(
+      path.join(runDirectory, "controls", controls[0].name),
+    ).mode & 0o777,
     0o600,
   );
 

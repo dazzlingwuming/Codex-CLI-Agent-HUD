@@ -4,6 +4,10 @@ import { spawnSync } from "node:child_process";
 
 import { HOOK_EVENTS, HOOK_MARKER } from "./constants.mjs";
 import { codexHome } from "./hooks-config.mjs";
+import {
+  hasShellIntegration,
+  shellRcPath,
+} from "./shell-integration.mjs";
 
 /**
  * @typedef {{
@@ -48,17 +52,7 @@ export function collectDoctorChecks({
     recovery: "Install Node.js 20 or newer.",
   });
 
-  const isAppleTerminal =
-    env.TERM_PROGRAM === "Apple_Terminal" ||
-    env.__CFBundleIdentifier === "com.apple.Terminal";
-  checks.push({
-    name: "terminal",
-    status: isAppleTerminal ? "ok" : "warn",
-    detail: isAppleTerminal
-      ? "Apple Terminal"
-      : env.TERM_PROGRAM || env.TERM || "unknown terminal",
-    recovery: "Apple Terminal is the verified v0.1 environment.",
-  });
+  checks.push(terminalCheck(env));
   checks.push({
     name: "tty",
     status: stdin.isTTY && stdout.isTTY ? "ok" : "warn",
@@ -67,6 +61,7 @@ export function collectDoctorChecks({
   });
   checks.push(hooksFeatureCheck());
   checks.push(hooksCheck(env));
+  checks.push(shellIntegrationCheck(env));
   return checks;
 }
 
@@ -188,6 +183,80 @@ function hooksCheck(env) {
   } catch (error) {
     return {
       name: "hooks",
+      status: "fail",
+      detail: error instanceof Error ? error.message : String(error),
+      recovery: "Run: codex-hud setup",
+    };
+  }
+}
+
+/**
+ * @param {NodeJS.ProcessEnv} env
+ * @returns {DoctorCheck}
+ */
+function terminalCheck(env) {
+  const identity = [
+    env.TERM_PROGRAM,
+    env.TERMINAL_EMULATOR,
+    env.__CFBundleIdentifier,
+    env.TERM,
+  ]
+    .filter(Boolean)
+    .join(" ");
+  const normalized = identity.toLowerCase();
+
+  if (/jetbrains|jediterm|pycharm|intellij/u.test(normalized)) {
+    return {
+      name: "terminal",
+      status: "warn",
+      detail: `${identity || "JetBrains terminal"} (use IDE 2025.3.2+)`,
+      recovery:
+        "Update PyCharm/IntelliJ to 2025.3.2 or newer if interactive output flickers.",
+    };
+  }
+  if (
+    /apple_terminal|com\.apple\.terminal|vscode|iterm|warp|wezterm|alacritty|kitty|xterm|screen|tmux/u.test(
+      normalized,
+    )
+  ) {
+    return {
+      name: "terminal",
+      status: "ok",
+      detail: identity || "xterm-compatible terminal",
+    };
+  }
+  return {
+    name: "terminal",
+    status: "warn",
+    detail: identity || "unknown terminal",
+    recovery:
+      "Use an xterm-compatible macOS terminal; run an interactive smoke test before relying on mouse controls.",
+  };
+}
+
+/**
+ * @param {NodeJS.ProcessEnv} env
+ * @returns {DoctorCheck}
+ */
+function shellIntegrationCheck(env) {
+  const rcPath = shellRcPath(env);
+  try {
+    const content = fs.readFileSync(rcPath, "utf8");
+    return hasShellIntegration(content)
+      ? {
+          name: "shell",
+          status: "ok",
+          detail: `interactive codex entry installed in ${rcPath}`,
+        }
+      : {
+          name: "shell",
+          status: "fail",
+          detail: `interactive codex entry missing from ${rcPath}`,
+          recovery: "Run: codex-hud setup",
+        };
+  } catch (error) {
+    return {
+      name: "shell",
       status: "fail",
       detail: error instanceof Error ? error.message : String(error),
       recovery: "Run: codex-hud setup",
