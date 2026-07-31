@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import fs from "node:fs";
 import path from "node:path";
 import {
   spawn,
@@ -152,33 +153,39 @@ function launchIsolatedTmux({
   delete childEnv.TMUX;
   delete childEnv.TMUX_PANE;
 
-  const result = spawnSync(
-    "tmux",
-    [
-      "-L",
-      socketName,
-      "-f",
-      "/dev/null",
-      "start-server",
-      ";",
-      "set-option",
-      "-g",
-      "status",
-      "off",
-      ";",
-      "new-session",
-      "-s",
-      "hud",
-      "-c",
-      launchCwd,
-      command,
-    ],
-    {
-      encoding: "utf8",
-      env: childEnv,
-      stdio: "inherit",
-    },
-  );
+  const result = (() => {
+    try {
+      return spawnSync(
+        "tmux",
+        [
+          "-L",
+          socketName,
+          "-f",
+          "/dev/null",
+          "start-server",
+          ";",
+          "set-option",
+          "-g",
+          "status",
+          "off",
+          ";",
+          "new-session",
+          "-s",
+          "hud",
+          "-c",
+          launchCwd,
+          command,
+        ],
+        {
+          encoding: "utf8",
+          env: childEnv,
+          stdio: "inherit",
+        },
+      );
+    } finally {
+      cleanupIsolatedTmux(socketName, childEnv);
+    }
+  })();
 
   const exitRecord = readRunJson(runDirectory, "exit.json", env);
   if (typeof exitRecord?.code === "number") {
@@ -189,6 +196,47 @@ function launchIsolatedTmux({
     return 2;
   }
   return typeof result.status === "number" ? result.status : 2;
+}
+
+/**
+ * Resolve the path tmux uses for a named `-L` socket.
+ *
+ * @param {string} socketName
+ * @param {NodeJS.ProcessEnv} [env]
+ */
+export function isolatedTmuxSocketPath(
+  socketName,
+  env = process.env,
+) {
+  const uid =
+    typeof process.getuid === "function" ? process.getuid() : 0;
+  return path.join(
+    env.TMUX_TMPDIR || "/tmp",
+    `tmux-${uid}`,
+    socketName,
+  );
+}
+
+/**
+ * Stop only this launch's isolated server and remove its stale socket.
+ *
+ * @param {string} socketName
+ * @param {NodeJS.ProcessEnv} env
+ */
+function cleanupIsolatedTmux(socketName, env) {
+  spawnSync("tmux", ["-N", "-L", socketName, "kill-server"], {
+    env,
+    stdio: "ignore",
+  });
+
+  const socketPath = isolatedTmuxSocketPath(socketName, env);
+  try {
+    if (fs.lstatSync(socketPath).isSocket()) {
+      fs.unlinkSync(socketPath);
+    }
+  } catch {
+    // The server normally removes its own socket; cleanup is best-effort.
+  }
 }
 
 /**

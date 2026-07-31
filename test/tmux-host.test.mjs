@@ -20,6 +20,7 @@ import {
 import {
   chooseHudHeight,
   hasStatusLineOverride,
+  isolatedTmuxSocketPath,
   withNativeStatusLine,
 } from "../src/tmux-host.mjs";
 
@@ -41,12 +42,28 @@ test("HUD height follows the verified responsive thresholds", () => {
   assert.throws(() => chooseHudHeight(30, 49), /too small/u);
 });
 
+test("isolated tmux socket path follows TMUX_TMPDIR and the current uid", () => {
+  const uid =
+    typeof process.getuid === "function" ? process.getuid() : 0;
+  assert.equal(
+    isolatedTmuxSocketPath("codex-hud-launch", {
+      TMUX_TMPDIR: "/private/test-tmux",
+    }),
+    path.join(
+      "/private/test-tmux",
+      `tmux-${uid}`,
+      "codex-hud-launch",
+    ),
+  );
+});
+
 test("detached tmux host preserves Codex exit code and arguments", async (context) => {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), "codex-hud-tmux-test-"));
   const root = path.join(base, "state");
   const socket = `codex-hud-test-${process.pid}-${Date.now()}`;
   context.after(() => {
     spawnSync("tmux", ["-L", socket, "kill-server"], { stdio: "ignore" });
+    fs.rmSync(isolatedTmuxSocketPath(socket), { force: true });
     fs.rmSync(base, { recursive: true });
   });
 
