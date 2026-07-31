@@ -22,5 +22,8 @@
   "devDependencies": {
     "@types/node": "^26.1.2",
     "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "string-width": "^8.2.2"
   }
 }

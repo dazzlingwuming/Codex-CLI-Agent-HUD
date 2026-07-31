@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { VERSION, helpText, runCli } from "../src/cli.mjs";
+import {
+  VERSION,
+  forwardedArguments,
+  helpText,
+  runCli,
+} from "../src/cli.mjs";
 
 function memoryIo() {
   const output = { stdout: "", stderr: "" };
@@ -43,4 +48,15 @@ test("version output matches the package version", async () => {
   assert.equal(exitCode, 0);
   assert.equal(output.stdout, `${VERSION}\n`);
   assert.match(helpText(), new RegExp(VERSION.replaceAll(".", "\\.")));
+});
+
+test("the public delimiter is removed before forwarding Codex arguments", () => {
+  assert.deepEqual(forwardedArguments(["--", "-m", "gpt-test"]), [
+    "-m",
+    "gpt-test",
+  ]);
+  assert.deepEqual(forwardedArguments(["-m", "gpt-test"]), [
+    "-m",
+    "gpt-test",
+  ]);
 });

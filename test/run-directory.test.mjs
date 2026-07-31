@@ -7,11 +7,14 @@ import test from "node:test";
 import { STATE_ROOT_ENV } from "../src/constants.mjs";
 import {
   cleanupStaleRuns,
+  consumeRunJson,
   createRunDirectory,
   readEventFiles,
+  readRunJson,
   removeRunDirectory,
   validateRunDirectory,
   writeEventAtomic,
+  writeRunJson,
 } from "../src/run-directory.mjs";
 
 test("run directories and event files are private and scoped", (context) => {
@@ -50,6 +53,19 @@ test("run directories and event files are private and scoped", (context) => {
     ),
     false,
   );
+  assert.equal(
+    writeRunJson(runDirectory, "launch.json", { secret: "ephemeral" }, env),
+    true,
+  );
+  assert.deepEqual(readRunJson(runDirectory, "launch.json", env), {
+    secret: "ephemeral",
+  });
+  assert.deepEqual(consumeRunJson(runDirectory, "launch.json", env), {
+    secret: "ephemeral",
+  });
+  assert.equal(readRunJson(runDirectory, "launch.json", env), null);
+  assert.equal(writeRunJson(runDirectory, "../outside.json", {}, env), false);
+
   assert.equal(removeRunDirectory(runDirectory, env), true);
   assert.equal(fs.existsSync(runDirectory), false);
 });

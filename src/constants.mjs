@@ -4,6 +4,7 @@ export const EVENT_VERSION = 1;
 export const RUN_DIRECTORY_ENV = "CODEX_HUD_RUN_DIR";
 export const STATE_ROOT_ENV = "CODEX_HUD_STATE_ROOT";
 export const DEBUG_ENV = "CODEX_HUD_DEBUG";
+export const CODEX_BINARY_ENV = "CODEX_HUD_CODEX_BIN";
 export const HOOK_MARKER = "CODEX_HUD_HOOK_V1";
 export const RUN_DIRECTORY_MAGIC = "codex-hud-run-v1";
 

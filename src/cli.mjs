@@ -2,12 +2,26 @@
 
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import {
+  collectDoctorChecks,
+  doctorExitCode,
+  formatDoctorText,
+} from "./doctor.mjs";
 import { runHook } from "./hook-runner.mjs";
 import {
   codexHome,
   setupHooks,
   uninstallHooks,
 } from "./hooks-config.mjs";
+import { runRenderer } from "./renderer.mjs";
+import {
+  cleanupStaleRuns,
+  writeRunJson,
+} from "./run-directory.mjs";
+import {
+  runHud,
+  runInsideTmux,
+} from "./tmux-host.mjs";
 
 export const VERSION = "0.1.0";
 
@@ -50,6 +64,33 @@ export async function runCli(
     return runHook();
   }
 
+  if (command === "__render") {
+    const runDirectory = argv[1];
+    if (!runDirectory) {
+      return 2;
+    }
+    try {
+      return await runRenderer({ runDirectory });
+    } catch (error) {
+      io.stderr.write(`codex-hud renderer degraded: ${errorMessage(error)}\n`);
+      return 2;
+    }
+  }
+
+  if (command === "__inside") {
+    const runDirectory = argv[1];
+    if (!runDirectory) {
+      return 2;
+    }
+    try {
+      return await runInsideTmux({ runDirectory, stderr: io.stderr });
+    } catch (error) {
+      writeRunJson(runDirectory, "exit.json", { code: 2 });
+      io.stderr.write(`codex-hud host failed: ${errorMessage(error)}\n`);
+      return 2;
+    }
+  }
+
   if (command === "setup") {
     try {
       const result = setupHooks({
@@ -63,6 +104,10 @@ export async function runCli(
       );
       if (result.backupPath) {
         io.stdout.write(`Backup: ${result.backupPath}\n`);
+      }
+      const removedRuns = cleanupStaleRuns();
+      if (removedRuns > 0) {
+        io.stdout.write(`Removed ${removedRuns} stale HUD run directories.\n`);
       }
       io.stdout.write(
         "Open Codex, run /hooks, and trust the Codex HUD hook definition once.\n",
@@ -95,10 +140,38 @@ export async function runCli(
     }
   }
 
-  io.stderr.write(
-    "codex-hud: implementation is not complete yet; run with --help for the planned interface.\n",
-  );
-  return 2;
+  if (command === "doctor") {
+    const checks = collectDoctorChecks();
+    if (argv[1] === "--json") {
+      io.stdout.write(`${JSON.stringify({ checks }, null, 2)}\n`);
+    } else {
+      io.stdout.write(formatDoctorText(checks));
+    }
+    return doctorExitCode(checks);
+  }
+
+  const codexArgs =
+    command === "run"
+      ? forwardedArguments(argv.slice(1))
+      : forwardedArguments(argv);
+  try {
+    return await runHud({
+      codexArgs,
+      entryPath: fileURLToPath(import.meta.url),
+      stderr: /** @type {NodeJS.WriteStream} */ (io.stderr),
+      stdout: /** @type {NodeJS.WriteStream} */ (io.stdout),
+    });
+  } catch (error) {
+    io.stderr.write(`codex-hud: ${errorMessage(error)}\n`);
+    return 2;
+  }
+}
+
+/**
+ * @param {string[]} values
+ */
+export function forwardedArguments(values) {
+  return values[0] === "--" ? values.slice(1) : values;
 }
 
 /**

@@ -124,6 +124,65 @@ export function readEventFiles(runDirectory) {
 }
 
 /**
+ * @param {string} runDirectory
+ */
+export function readRunMeta(runDirectory) {
+  return readJson(path.join(runDirectory, "meta.json"));
+}
+
+/**
+ * @param {string} runDirectory
+ * @param {string} name
+ * @param {unknown} value
+ * @param {NodeJS.ProcessEnv} env
+ */
+export function writeRunJson(
+  runDirectory,
+  name,
+  value,
+  env = process.env,
+) {
+  if (!safeRunFilename(name) || !validateRunDirectory(runDirectory, env)) {
+    return false;
+  }
+  writeJsonAtomic(path.join(runDirectory, name), value);
+  return true;
+}
+
+/**
+ * @param {string} runDirectory
+ * @param {string} name
+ * @param {NodeJS.ProcessEnv} env
+ */
+export function readRunJson(
+  runDirectory,
+  name,
+  env = process.env,
+) {
+  if (!safeRunFilename(name) || !validateRunDirectory(runDirectory, env)) {
+    return null;
+  }
+  return readJson(path.join(runDirectory, name));
+}
+
+/**
+ * @param {string} runDirectory
+ * @param {string} name
+ * @param {NodeJS.ProcessEnv} env
+ */
+export function consumeRunJson(
+  runDirectory,
+  name,
+  env = process.env,
+) {
+  const value = readRunJson(runDirectory, name, env);
+  if (value !== null) {
+    fs.rmSync(path.join(runDirectory, name));
+  }
+  return value;
+}
+
+/**
  * @param {{env?: NodeJS.ProcessEnv, now?: number, maxAgeMs?: number}} options
  */
 export function cleanupStaleRuns({
@@ -211,4 +270,11 @@ function readJson(filename) {
   } catch {
     return null;
   }
+}
+
+/**
+ * @param {string} name
+ */
+function safeRunFilename(name) {
+  return /^[a-z][a-z0-9-]*\.json$/u.test(name);
 }
