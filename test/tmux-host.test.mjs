@@ -23,12 +23,15 @@ import {
   chooseHudHeight,
   chooseHudViewHeight,
   hasAlternateScreenOverride,
+  hasAnimationsOverride,
   hasStatusLineOverride,
   isolatedTmuxSocketPath,
+  tmuxClientFeatureArgs,
   todoMouseBinding,
   withHudTuiDefaults,
   withNativeStatusLine,
   withScrollableScreen,
+  withStaticAnimations,
 } from "../src/tmux-host.mjs";
 
 test("native status line is injected once and explicit user config wins", () => {
@@ -65,6 +68,55 @@ test("HUD keeps terminal scrollback unless the user overrides alternate screen",
   assert.equal(
     defaults.filter((value) => value === "--no-alt-screen").length,
     1,
+  );
+});
+
+test("HUD disables active Codex animations unless the user overrides them", () => {
+  assert.deepEqual(withStaticAnimations(["resume"]), [
+    "-c",
+    "tui.animations=false",
+    "resume",
+  ]);
+
+  const explicit = ["-c", "tui.animations=true", "resume"];
+  assert.equal(hasAnimationsOverride(explicit), true);
+  assert.deepEqual(withStaticAnimations(explicit), explicit);
+  assert.equal(
+    hasAnimationsOverride([
+      "--config=tui.animations=false",
+      "resume",
+    ]),
+    true,
+  );
+
+  const defaults = withHudTuiDefaults(["resume"]);
+  assert.equal(
+    defaults.filter((value) => value === "tui.animations=false")
+      .length,
+    1,
+  );
+});
+
+test("JetBrains HUD clients advertise synchronized output to tmux", () => {
+  assert.deepEqual(
+    tmuxClientFeatureArgs({
+      TERMINAL_EMULATOR: "JetBrains-JediTerm",
+    }),
+    ["-T", "sync"],
+  );
+  assert.deepEqual(
+    tmuxClientFeatureArgs({
+      __CFBundleIdentifier: "com.jetbrains.pycharm",
+    }),
+    ["-T", "sync"],
+  );
+  assert.deepEqual(
+    tmuxClientFeatureArgs({ TERM_PROGRAM: "Apple_Terminal" }),
+    [],
+  );
+  assert.deepEqual(
+    tmuxClientFeatureArgs({ TERM_PROGRAM: "vscode" }),
+    [],
   );
 });
 
@@ -189,6 +241,7 @@ test("detached tmux host preserves Codex exit code and arguments", async (contex
   assert.equal(args[0], "-c");
   assert.match(args[1], /^tui\.status_line=/u);
   assert.ok(args.includes("--no-alt-screen"));
+  assert.ok(args.includes("tui.animations=false"));
   assert.deepEqual(args.slice(-2), ["--test-value", "含 空格"]);
   assert.equal(readRunJson(runDirectory, "launch.json", env), null);
   assert.equal(removeRunDirectory(runDirectory, env), true);

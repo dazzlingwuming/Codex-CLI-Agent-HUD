@@ -61,6 +61,33 @@ export function withScrollableScreen(args) {
 }
 
 /**
+ * Disable Codex's active status/spinner/shimmer animations inside HUD
+ * sessions. These high-frequency updates can make terminal multiplexers
+ * visibly flicker in embedded terminal emulators.
+ *
+ * @param {string[]} args
+ */
+export function withStaticAnimations(args) {
+  if (hasAnimationsOverride(args)) {
+    return [...args];
+  }
+  return ["-c", "tui.animations=false", ...args];
+}
+
+/**
+ * @param {string[]} args
+ */
+export function hasAnimationsOverride(args) {
+  return args.some(
+    (value, index) =>
+      value.startsWith("tui.animations=") ||
+      value.startsWith("--config=tui.animations=") ||
+      ((value === "-c" || value === "--config") &&
+        args[index + 1]?.startsWith("tui.animations=")),
+  );
+}
+
+/**
  * @param {string[]} args
  */
 export function hasAlternateScreenOverride(args) {
@@ -78,7 +105,9 @@ export function hasAlternateScreenOverride(args) {
  * @param {string[]} args
  */
 export function withHudTuiDefaults(args) {
-  return withNativeStatusLine(withScrollableScreen(args));
+  return withNativeStatusLine(
+    withScrollableScreen(withStaticAnimations(args)),
+  );
 }
 
 /**
@@ -221,6 +250,7 @@ function launchIsolatedTmux({
         [
           "-L",
           socketName,
+          ...tmuxClientFeatureArgs(childEnv),
           "-f",
           "/dev/null",
           "start-server",
@@ -272,6 +302,27 @@ function launchIsolatedTmux({
     return 2;
   }
   return typeof result.status === "number" ? result.status : 2;
+}
+
+/**
+ * JetBrains Terminal 2025.3.2+ supports synchronized output, but presents
+ * itself as a generic xterm terminal that tmux cannot identify automatically.
+ * Advertise only the missing client feature for this isolated HUD client.
+ *
+ * @param {NodeJS.ProcessEnv} env
+ */
+export function tmuxClientFeatureArgs(env = process.env) {
+  const identity = [
+    env.TERM_PROGRAM,
+    env.TERMINAL_EMULATOR,
+    env.__CFBundleIdentifier,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  return /jetbrains|jediterm|pycharm|intellij/u.test(identity)
+    ? ["-T", "sync"]
+    : [];
 }
 
 /**

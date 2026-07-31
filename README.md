@@ -120,7 +120,7 @@ codex-hud doctor
 
 这项覆盖只对当前包装会话有效，不修改全局 `config.toml`。
 
-HUD 会话还默认传入 Codex 官方的 `--no-alt-screen`，让输出保留在主屏并进入 tmux scrollback。若用户显式传入 `tui.alternate_screen`，则尊重用户配置。
+HUD 会话还默认传入 Codex 官方的 `--no-alt-screen`，让输出保留在主屏并进入 tmux scrollback；同时注入 `tui.animations=false`，关闭运行中的 status、spinner 和 shimmer 动画，避免嵌入式终端高频重绘。JetBrains Terminal 2025.3.2+ 会额外启用 tmux synchronized output，把剩余流式更新作为完整帧提交。若用户显式传入 `tui.alternate_screen` 或 `tui.animations`，则尊重用户配置。
 
 ## 鼠标、Todo 与滚动
 
@@ -143,7 +143,7 @@ HUD 会话还默认传入 Codex 官方的 `--no-alt-screen`，让输出保留在
 
 终端至少需要 50 列、14 行。达到 80 列、22 行时使用 6 行完整 HUD，否则使用 3 行紧凑布局。窗口 resize 或 Todo 展开/收起后 renderer 会自动调整。
 
-为降低输入区闪烁，HUD renderer 首帧清理一次，后续只更新内容发生变化的行；计时显示最多每秒更新一次，不再高频整屏清除或反复隐藏/显示光标。
+为降低输入区闪烁，HUD renderer 首帧清理一次，后续只更新内容发生变化的行；计时显示最多每秒更新一次，不再高频整屏清除或反复隐藏/显示光标。HUD 包装的 Codex 也默认关闭运行中动画。
 
 ## 数据边界
 
@@ -177,7 +177,7 @@ codex-hud doctor
 - HUD 显示 `No plan provided`：当前 Codex 回合没有调用 `update_plan`，HUD 不会伪造 Todo。
 - WebSearch 时只显示 `Working`：这是当前 Codex Hosted Tool Hook 覆盖范围的已知限制。
 - `codex` 没有自动进入 HUD：执行 `codex-hud setup` 后打开新终端，或运行 `source ~/.zshrc`；再用 `type codex` 确认它是 HUD 安装的 function。
-- PyCharm 输入区仍高频闪烁：先升级 PyCharm/IntelliJ 平台到 2025.3.2 或更新版本。HUD 已使用差量刷新，但无法从应用层修复旧版 JetBrains Terminal 的同步输出渲染缺陷。
+- PyCharm 输入区仍高频闪烁：确认已经退出旧会话并重新执行 `codex`，再检查真实启动参数是否包含 `tui.animations=false`，且 tmux client features 包含 `sync`；同时升级 PyCharm/IntelliJ 平台到 2025.3.2 或更新版本。HUD 已关闭 Codex 运行中动画、启用同步帧并使用差量刷新，但无法从应用层修复旧版 JetBrains Terminal 的同步输出渲染缺陷。
 - 滚轮进入 copy-mode 后不能继续输入：按 `q` 退出 copy-mode。
 
 ## 卸载与回滚
