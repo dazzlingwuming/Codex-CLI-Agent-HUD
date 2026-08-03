@@ -10,7 +10,7 @@ import {
   renderRevision,
   selectPlanWindow,
 } from "../src/renderer.mjs";
-import { modeButtonLayout } from "../src/interaction-mode.mjs";
+import { copyActionLayout } from "../src/copy-action.mjs";
 import { createInitialState } from "../src/state.mjs";
 import {
   fitDisplay,
@@ -107,14 +107,14 @@ test("compact HUD uses three information lines", () => {
   assert.match(frame[1], /Waiting for first prompt/u);
 });
 
-test("selection controls reserve a CJK-safe right-aligned header across widths", () => {
+test("copy action reserves a CJK-safe right-aligned header across widths", () => {
   const state = createInitialState({
     cwd: "/workspace",
     launchId: "launch",
     startedAtMs: 0,
   });
   state.phase = "验证中文";
-  state.task = "实现复制模式与中文任务标题";
+  state.task = "实现复制所选按钮与中文任务标题";
 
   for (const { height, width } of [
     { height: 3, width: 50 },
@@ -125,27 +125,25 @@ test("selection controls reserve a CJK-safe right-aligned header across widths",
     const frame = renderHud(state, {
       color: false,
       height,
-      interactionMode: "copy",
       now: 0,
-      selectionControls: true,
+      copyActionControls: true,
       width,
     });
-    const layout = modeButtonLayout(width, "copy");
+    const layout = copyActionLayout(width);
 
     assert.ok(layout);
     assert.equal(frame.length, height);
     assert.ok(frame.every((line) => stringWidth(line) === width));
     assert.ok(frame[0].endsWith(layout.text));
-    assert.match(frame[0], /● 复制模式/u);
-    assert.match(frame[0], /○ HUD 模式/u);
+    assert.match(frame[0], /\[复制所选\]/u);
     assert.match(
       frame[0],
-      height === 3 ? /验证中文/u : /实现复制模式/u,
+      height === 3 ? /验证中文/u : /实现复制所选/u,
     );
   }
 });
 
-test("full and compact headers show the active interaction mode", () => {
+test("full and compact headers show the single copy action", () => {
   const state = createInitialState({
     cwd: "/workspace",
     launchId: "launch",
@@ -155,33 +153,29 @@ test("full and compact headers show the active interaction mode", () => {
   const full = renderHud(state, {
     color: false,
     height: 6,
-    interactionMode: "hud",
     now: 0,
-    selectionControls: true,
+    copyActionControls: true,
     width: 100,
   });
   const compact = renderHud(state, {
     color: false,
     height: 3,
-    interactionMode: "copy",
     now: 0,
-    selectionControls: true,
+    copyActionControls: true,
     width: 60,
   });
 
-  assert.match(full[0], /○ 复制模式/u);
-  assert.match(full[0], /● HUD 模式/u);
-  assert.match(compact[0], /● 复制模式/u);
-  assert.match(compact[0], /○ HUD 模式/u);
+  assert.match(full[0], /\[复制所选\]/u);
+  assert.match(compact[0], /\[复制所选\]/u);
 });
 
-test("selection controls stay hidden without the capability", () => {
+test("copy action stays hidden without the capability", () => {
   const state = createInitialState({
     cwd: "/workspace",
     launchId: "launch",
     startedAtMs: 0,
   });
-  state.task = "保持非 JetBrains 输出";
+  state.task = "保持跨终端输出";
 
   const defaultFrame = renderHud(state, {
     color: false,
@@ -192,63 +186,44 @@ test("selection controls stay hidden without the capability", () => {
   const hiddenControlsFrame = renderHud(state, {
     color: false,
     height: 6,
-    interactionMode: "copy",
     now: 0,
-    selectionControls: false,
+    copyActionControls: false,
     width: 100,
   });
 
   assert.deepEqual(hiddenControlsFrame, defaultFrame);
-  assert.doesNotMatch(hiddenControlsFrame.join("\n"), /复制模式|HUD 模式/u);
+  assert.doesNotMatch(hiddenControlsFrame.join("\n"), /复制所选/u);
 });
 
-test("control reducer preserves Todo expansion and gates explicit modes", () => {
+test("control reducer preserves Todo expansion and ignores unrelated controls", () => {
   const todoToggle = {
     kind: "todo.toggle",
     observedAtMs: 1,
     version: 1,
   };
-  const copyMode = {
-    kind: "interaction.mode.set",
-    mode: "copy",
+  const unrelatedControl = {
+    kind: "future.control",
     observedAtMs: 2,
     version: 1,
   };
-  const controls = createHudControls({ selectionControls: true });
+  const controls = createHudControls({ copyActionControls: true });
   const expanded = reduceHudControls(controls, todoToggle);
-  const copy = reduceHudControls(expanded, copyMode);
 
   assert.deepEqual(expanded, {
     expanded: true,
-    interactionMode: "hud",
-    selectionControls: true,
+    copyActionControls: true,
   });
-  assert.deepEqual(copy, {
-    expanded: true,
-    interactionMode: "copy",
-    selectionControls: true,
-  });
-  assert.equal(reduceHudControls(copy, copyMode), copy);
-  assert.deepEqual(reduceHudControls(copy, todoToggle), {
+  assert.equal(reduceHudControls(expanded, unrelatedControl), expanded);
+  assert.deepEqual(reduceHudControls(expanded, todoToggle), {
     expanded: false,
-    interactionMode: "copy",
-    selectionControls: true,
+    copyActionControls: true,
   });
 
-  for (const invalidControl of [
-    { ...copyMode, mode: "other" },
-    { ...copyMode, observedAtMs: Number.NaN },
-    { ...copyMode, version: 2 },
-  ]) {
-    assert.equal(reduceHudControls(copy, invalidControl), copy);
-  }
-
-  const unavailable = createHudControls({ selectionControls: false });
-  assert.equal(reduceHudControls(unavailable, copyMode), unavailable);
+  const unavailable = createHudControls({ copyActionControls: false });
+  assert.equal(reduceHudControls(unavailable, unrelatedControl), unavailable);
   assert.deepEqual(reduceHudControls(unavailable, todoToggle), {
     expanded: true,
-    interactionMode: "hud",
-    selectionControls: false,
+    copyActionControls: false,
   });
 });
 
@@ -313,36 +288,38 @@ test("renderer revision changes only for visible frame inputs", () => {
     initial,
   );
 
+  const copyActionControls = renderRevision({
+    eventCount: 2,
+    height: 6,
+    now: 1_999,
+    copyActionControls: true,
+    width: 100,
+  });
+  assert.notEqual(copyActionControls, initial);
   assert.equal(
     renderRevision({
       eventCount: 2,
       height: 6,
-      interactionMode: "copy",
       now: 1_999,
+      copyActionControls: true,
       width: 100,
     }),
-    initial,
+    copyActionControls,
   );
-
-  const hudControls = renderRevision({
-    eventCount: 2,
-    height: 6,
-    interactionMode: "hud",
-    now: 1_999,
-    selectionControls: true,
-    width: 100,
-  });
-  assert.notEqual(hudControls, initial);
-  assert.notEqual(
+  assert.equal(
     renderRevision({
       eventCount: 2,
       height: 6,
-      interactionMode: "copy",
       now: 1_999,
-      selectionControls: true,
-      width: 100,
+      copyActionControls: true,
+      width: 49,
     }),
-    hudControls,
+    renderRevision({
+      eventCount: 2,
+      height: 6,
+      now: 1_999,
+      width: 49,
+    }),
   );
 });
 

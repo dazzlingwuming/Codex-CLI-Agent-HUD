@@ -1,8 +1,6 @@
 import {
-  DEFAULT_INTERACTION_MODE,
-  hitTestModeButton,
-  isInteractionMode,
-} from "./interaction-mode.mjs";
+  hitTestCopyAction,
+} from "./copy-action.mjs";
 import {
   readRunMeta,
   validateRunDirectory,
@@ -10,20 +8,19 @@ import {
 } from "./run-directory.mjs";
 
 /**
- * Route one tmux HUD click to either an explicit interaction mode or the
- * existing Todo control. tmux's mouse_x and mouse_y formats are already
- * zero-based coordinates relative to the mouse pane.
+ * Route one tmux HUD click to an explicit copy action or the existing Todo
+ * control. tmux's mouse_x and mouse_y formats are already zero-based
+ * coordinates relative to the mouse pane.
  *
  * @param {{
  *   runDirectory: string,
- *   sessionId: string,
+ *   codexPane: string,
  *   mouseX: string | number,
  *   mouseY: string | number,
  *   paneWidth: string | number,
  *   env?: NodeJS.ProcessEnv,
  *   now?: number,
- *   readMode: (sessionId: string, env: NodeJS.ProcessEnv) => unknown,
- *   setMode: (sessionId: string, mode: "hud" | "copy", env: NodeJS.ProcessEnv) => unknown,
+ *   copySelection?: (codexPane: string, env: NodeJS.ProcessEnv) => boolean,
  *   validate?: typeof validateRunDirectory,
  *   readMeta?: typeof readRunMeta,
  *   writeControl?: typeof writeControlAtomic,
@@ -31,19 +28,22 @@ import {
  */
 export function handleHudClick({
   runDirectory,
-  sessionId,
+  codexPane,
   mouseX,
   mouseY,
   paneWidth,
   env = process.env,
   now = Date.now(),
-  readMode,
-  setMode,
+  copySelection,
   validate = validateRunDirectory,
   readMeta = readRunMeta,
   writeControl = writeControlAtomic,
 }) {
-  if (!sessionId || !validate(runDirectory, env)) {
+  if (
+    typeof codexPane !== "string" ||
+    codexPane.length === 0 ||
+    !validate(runDirectory, env)
+  ) {
     return 2;
   }
 
@@ -59,50 +59,24 @@ export function handleHudClick({
 
   const meta = readMeta(runDirectory);
   if (
-    meta?.selectionControls === true &&
+    meta?.copyActionControls === true &&
     meta?.ownsTmuxServer === true
   ) {
-    const observedMode = readMode(sessionId, env);
-    const currentMode = isInteractionMode(observedMode)
-      ? observedMode
-      : DEFAULT_INTERACTION_MODE;
-    const requestedMode = hitTestModeButton({
+    const requestedCopy = hitTestCopyAction({
       column,
-      mode: currentMode,
       row,
       width,
     });
 
-    if (requestedMode) {
-      if (requestedMode === currentMode) {
-        return 0;
+    if (requestedCopy) {
+      if (typeof copySelection !== "function") {
+        return 2;
       }
       try {
-        setMode(sessionId, requestedMode, env);
+        return copySelection(codexPane, env) === true ? 0 : 2;
       } catch {
         return 2;
       }
-      if (
-        writeControl(
-          runDirectory,
-          {
-            kind: "interaction.mode.set",
-            mode: requestedMode,
-            observedAtMs: now,
-            version: 1,
-          },
-          env,
-        )
-      ) {
-        return 0;
-      }
-      try {
-        setMode(sessionId, currentMode, env);
-      } catch {
-        // The caller reports failure; cleanup of the isolated server remains
-        // the final recovery boundary if a rollback also fails.
-      }
-      return 2;
     }
   }
 
