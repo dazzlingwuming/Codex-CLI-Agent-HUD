@@ -30,17 +30,17 @@ test("run directories and event files are private and scoped", (context) => {
     env,
     launchId: "launch",
     ownsTmuxServer: true,
-    selectionControls: true,
+    copyActionControls: true,
     startedAtMs: 1_000,
   });
 
   assert.equal(validateRunDirectory(runDirectory, env), true);
   assert.deepEqual(readRunJson(runDirectory, "meta.json", env), {
     cwd: "/workspace",
+    copyActionControls: true,
     launchId: "launch",
     magic: RUN_DIRECTORY_MAGIC,
     ownsTmuxServer: true,
-    selectionControls: true,
     startedAtMs: 1_000,
   });
   assert.equal(fs.statSync(runDirectory).mode & 0o777, 0o700);

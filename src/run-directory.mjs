@@ -22,7 +22,7 @@ export function stateRoot(env = process.env) {
 }
 
 /**
- * @param {{cwd: string, launchId?: string, startedAtMs?: number, env?: NodeJS.ProcessEnv, ownsTmuxServer?: boolean, selectionControls?: boolean}} options
+ * @param {{cwd: string, launchId?: string, startedAtMs?: number, env?: NodeJS.ProcessEnv, ownsTmuxServer?: boolean, copyActionControls?: boolean}} options
  */
 export function createRunDirectory({
   cwd,
@@ -30,7 +30,7 @@ export function createRunDirectory({
   startedAtMs = Date.now(),
   env = process.env,
   ownsTmuxServer = false,
-  selectionControls = false,
+  copyActionControls = false,
 }) {
   const root = stateRoot(env);
   ensurePrivateDirectory(root);
@@ -42,10 +42,10 @@ export function createRunDirectory({
   fs.mkdirSync(path.join(runDirectory, "events"), { mode: 0o700 });
   writeJsonAtomic(path.join(runDirectory, "meta.json"), {
     cwd,
+    copyActionControls,
     launchId,
     magic: RUN_DIRECTORY_MAGIC,
     ownsTmuxServer,
-    selectionControls,
     startedAtMs,
   });
   return runDirectory;
