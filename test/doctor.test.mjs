@@ -56,7 +56,11 @@ test("doctor describes PyCharm copy mode as manual verification only", () => {
   const appleTerminal = apple.find((check) => check.name === "terminal");
   assert.equal(appleTerminal?.status, "ok");
   assert.match(appleTerminal?.detail || "", /PyCharm-only controls disabled/u);
-  assert.match(appleTerminal?.detail || "", /standard tmux behavior retained/u);
+  assert.match(appleTerminal?.detail || "", /HUD scrollback available/u);
+  assert.doesNotMatch(
+    appleTerminal?.detail || "",
+    /standard tmux behavior retained/u,
+  );
 
   const vscode = collectDoctorChecks({
     env: {
@@ -71,6 +75,34 @@ test("doctor describes PyCharm copy mode as manual verification only", () => {
   const vscodeTerminal = vscode.find((check) => check.name === "terminal");
   assert.equal(vscodeTerminal?.status, "ok");
   assert.match(vscodeTerminal?.detail || "", /PyCharm-only controls disabled/u);
+  assert.match(vscodeTerminal?.detail || "", /HUD scrollback available/u);
+  assert.doesNotMatch(
+    vscodeTerminal?.detail || "",
+    /standard tmux behavior retained/u,
+  );
+
+  const unknown = collectDoctorChecks({
+    env: {
+      ...process.env,
+      __CFBundleIdentifier: "",
+      TERMINAL_EMULATOR: "",
+      TERM_PROGRAM: "not-a-known-terminal",
+      TERM: "dumb",
+    },
+    stdin,
+    stdout,
+  });
+  const unknownTerminal = unknown.find((check) => check.name === "terminal");
+  assert.equal(unknownTerminal?.status, "warn");
+  assert.match(
+    unknownTerminal?.detail || "",
+    /PyCharm-only controls disabled/u,
+  );
+  assert.match(unknownTerminal?.detail || "", /HUD scrollback available/u);
+  assert.doesNotMatch(
+    unknownTerminal?.detail || "",
+    /standard tmux behavior retained/u,
+  );
 
   const jetbrains = collectDoctorChecks({
     env: {
