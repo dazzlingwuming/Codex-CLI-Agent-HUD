@@ -10,6 +10,12 @@ import {
   reduceHudState,
 } from "./state.mjs";
 import {
+  DEFAULT_INTERACTION_MODE,
+  isInteractionMode,
+  isInteractionModeControl,
+  modeButtonLayout,
+} from "./interaction-mode.mjs";
+import {
   fitDisplay,
   formatDuration,
 } from "./terminal.mjs";
@@ -24,8 +30,83 @@ const ANSI = {
 };
 
 /**
+ * @typedef {{
+ *   expanded: boolean,
+ *   interactionMode: "hud" | "copy",
+ *   selectionControls: boolean,
+ * }} HudControls
+ */
+
+/**
+ * @param {{
+ *   expanded?: boolean,
+ *   interactionMode?: unknown,
+ *   selectionControls?: boolean,
+ * }} [options]
+ * @returns {HudControls}
+ */
+export function createHudControls({
+  expanded = false,
+  interactionMode = DEFAULT_INTERACTION_MODE,
+  selectionControls = false,
+} = {}) {
+  const enabled = selectionControls === true;
+  return {
+    expanded: expanded === true,
+    interactionMode:
+      enabled && isInteractionMode(interactionMode)
+        ? interactionMode
+        : DEFAULT_INTERACTION_MODE,
+    selectionControls: enabled,
+  };
+}
+
+/**
+ * @param {unknown} control
+ */
+function isTodoToggleControl(control) {
+  if (!control || typeof control !== "object") {
+    return false;
+  }
+  const candidate = /** @type {Record<string, unknown>} */ (control);
+  return (
+    candidate.version === 1 &&
+    candidate.kind === "todo.toggle" &&
+    typeof candidate.observedAtMs === "number" &&
+    Number.isFinite(candidate.observedAtMs)
+  );
+}
+
+/**
+ * @param {HudControls} controls
+ * @param {unknown} control
+ * @returns {HudControls}
+ */
+export function reduceHudControls(controls, control) {
+  if (isTodoToggleControl(control)) {
+    return { ...controls, expanded: !controls.expanded };
+  }
+  if (
+    controls.selectionControls &&
+    isInteractionModeControl(control) &&
+    controls.interactionMode !== control.mode
+  ) {
+    return { ...controls, interactionMode: control.mode };
+  }
+  return controls;
+}
+
+/**
  * @param {ReturnType<typeof createInitialState>} state
- * @param {{width: number, height: number, color?: boolean, expanded?: boolean, now?: number}} options
+ * @param {{
+ *   width: number,
+ *   height: number,
+ *   color?: boolean,
+ *   expanded?: boolean,
+ *   interactionMode?: "hud" | "copy",
+ *   now?: number,
+ *   selectionControls?: boolean,
+ * }} options
  */
 export function renderHud(
   state,
@@ -34,16 +115,23 @@ export function renderHud(
     height,
     color = true,
     expanded = false,
+    interactionMode = DEFAULT_INTERACTION_MODE,
     now = Date.now(),
+    selectionControls = false,
   },
 ) {
   const safeWidth = Math.max(1, width);
   const safeHeight = Math.max(1, height);
+  const controls = createHudControls({
+    expanded,
+    interactionMode,
+    selectionControls,
+  });
   const full =
-    safeHeight >= 6 && safeWidth >= (expanded ? 50 : 80);
+    safeHeight >= 6 && safeWidth >= (controls.expanded ? 50 : 80);
   const lines = full
-    ? renderFull(state, safeWidth, safeHeight, now, expanded)
-    : renderCompact(state, safeWidth, now);
+    ? renderFull(state, safeWidth, safeHeight, now, controls)
+    : renderCompact(state, safeWidth, now, controls);
 
   while (lines.length < safeHeight) {
     lines.push("");
@@ -59,14 +147,14 @@ export function renderHud(
  * @param {number} width
  * @param {number} height
  * @param {number} now
- * @param {boolean} expanded
+ * @param {HudControls} controls
  */
-function renderFull(state, width, height, now, expanded) {
+function renderFull(state, width, height, now, controls) {
   const progress = progressText(state.plan);
   const phase = `${state.phaseInferred ? "~" : ""}${state.phase}`;
   const duration = formatDuration(now - state.startedAtMs);
   const task = state.task ?? "Waiting for first prompt";
-  const planLimit = expanded ? Math.max(1, height - 4) : 3;
+  const planLimit = controls.expanded ? Math.max(1, height - 4) : 3;
   const plan = selectPlanWindow(state.plan, planLimit);
   const planLines =
     plan.items.length === 0
@@ -74,7 +162,7 @@ function renderFull(state, width, height, now, expanded) {
       : plan.items.map((item, index) => {
           const label = index === 0 ? "Todo    " : "        ";
           const suffix =
-            !expanded &&
+            !controls.expanded &&
             index === plan.items.length - 1 &&
             plan.hidden > 0
               ? `  (+${plan.hidden} more · click)`
@@ -82,19 +170,23 @@ function renderFull(state, width, height, now, expanded) {
           return `${label} ${planSymbol(item.status)} ${item.step}${suffix}`;
         });
 
-  if (!expanded) {
+  if (!controls.expanded) {
     while (planLines.length < 3) {
       planLines.push("");
     }
   }
 
   const lines = [
-    `Codex HUD  Task: ${task}`,
+    renderHeader(
+      `Codex HUD  Task: ${task}`,
+      width,
+      controls,
+    ),
     `Status     ${phase} · ${progress} · ${duration}`,
     `Current    ${state.currentAction}`,
     ...planLines,
   ];
-  if (expanded) {
+  if (controls.expanded) {
     lines.push(
       plan.hidden > 0
         ? `         ▲ click to collapse · ${plan.hidden} hidden by terminal height`
@@ -108,15 +200,38 @@ function renderFull(state, width, height, now, expanded) {
  * @param {ReturnType<typeof createInitialState>} state
  * @param {number} width
  * @param {number} now
+ * @param {HudControls} controls
  */
-function renderCompact(state, width, now) {
+function renderCompact(state, width, now, controls) {
   const phase = `${state.phaseInferred ? "~" : ""}${state.phase}`;
   const duration = formatDuration(now - state.startedAtMs);
   return [
-    `HUD · ${phase} · ${progressText(state.plan)} · ${duration}`,
+    renderHeader(
+      `HUD · ${phase} · ${progressText(state.plan)} · ${duration}`,
+      width,
+      controls,
+    ),
     `Task: ${state.task ?? "Waiting for first prompt"}`,
     `Current: ${state.currentAction}`,
   ].map((line) => fitDisplay(line, width));
+}
+
+/**
+ * Keep the controls' visible layout and click geometry in the shared
+ * interaction-mode contract. The left header uses only the remaining display
+ * columns, so CJK task text cannot overlap the right-aligned controls.
+ *
+ * @param {string} left
+ * @param {number} width
+ * @param {HudControls} controls
+ */
+function renderHeader(left, width, controls) {
+  const layout = controls.selectionControls
+    ? modeButtonLayout(width, controls.interactionMode)
+    : null;
+  return layout
+    ? `${fitDisplay(left, layout.startColumn)}${layout.text}`
+    : left;
 }
 
 /**
@@ -232,22 +347,20 @@ export function replayNewEvents(runDirectory, state, seen) {
 /**
  * @param {string} runDirectory
  * @param {Set<string>} seen
- * @param {boolean} expanded
+ * @param {HudControls} controls
  */
-export function replayNewControls(runDirectory, seen, expanded) {
-  let next = expanded;
+export function replayNewControls(
+  runDirectory,
+  seen,
+  controls = createHudControls(),
+) {
+  let next = controls;
   for (const { name, control } of readControlFiles(runDirectory)) {
     if (seen.has(name)) {
       continue;
     }
     seen.add(name);
-    if (
-      control.version === 1 &&
-      control.kind === "todo.toggle" &&
-      typeof control.observedAtMs === "number"
-    ) {
-      next = !next;
-    }
+    next = reduceHudControls(next, control);
   }
   return next;
 }
@@ -258,7 +371,16 @@ export function replayNewControls(runDirectory, seen, expanded) {
  * Event files are still polled more frequently than once per second, while the
  * elapsed-time display advances only on whole-second boundaries.
  *
- * @param {{eventCount: number, controlCount?: number, expanded?: boolean, width: number, height: number, now: number}} input
+ * @param {{
+ *   eventCount: number,
+ *   controlCount?: number,
+ *   expanded?: boolean,
+ *   height: number,
+ *   interactionMode?: "hud" | "copy",
+ *   now: number,
+ *   selectionControls?: boolean,
+ *   width: number,
+ * }} input
  */
 export function renderRevision({
   eventCount,
@@ -266,9 +388,17 @@ export function renderRevision({
   expanded = false,
   width,
   height,
+  interactionMode = DEFAULT_INTERACTION_MODE,
   now,
+  selectionControls = false,
 }) {
-  return `${eventCount}:${controlCount}:${expanded}:${width}:${height}:${Math.floor(now / 1_000)}`;
+  const base = `${eventCount}:${controlCount}:${expanded}:${width}:${height}:${Math.floor(now / 1_000)}`;
+  const mode = isInteractionMode(interactionMode)
+    ? interactionMode
+    : DEFAULT_INTERACTION_MODE;
+  return selectionControls === true && modeButtonLayout(width, mode)
+    ? `${base}:${mode}`
+    : base;
 }
 
 /**
@@ -291,6 +421,8 @@ export function diffFrame(previous, next) {
  * @param {{
  *   runDirectory: string,
  *   env?: NodeJS.ProcessEnv,
+ *   interactionMode?: "hud" | "copy",
+ *   selectionControls?: boolean,
  *   stdout?: NodeJS.WriteStream,
  *   intervalMs?: number,
  *   resize?: typeof resizeHudPane
@@ -299,6 +431,8 @@ export function diffFrame(previous, next) {
 export async function runRenderer({
   runDirectory,
   env = process.env,
+  interactionMode = DEFAULT_INTERACTION_MODE,
+  selectionControls = false,
   stdout = process.stdout,
   intervalMs = 100,
   resize = resizeHudPane,
@@ -323,7 +457,10 @@ export async function runRenderer({
   });
   const seenControls = new Set();
   const seenEvents = new Set();
-  let expanded = false;
+  let controls = createHudControls({
+    interactionMode,
+    selectionControls,
+  });
   let previousFrame;
   let previousLayoutRevision;
   let stopped = false;
@@ -340,18 +477,18 @@ export async function runRenderer({
   try {
     while (!stopped) {
       state = replayNewEvents(runDirectory, state, seenEvents);
-      expanded = replayNewControls(
+      controls = replayNewControls(
         runDirectory,
         seenControls,
-        expanded,
+        controls,
       );
 
-      const layoutRevision = `${expanded}:${state.plan.length}`;
+      const layoutRevision = `${controls.expanded}:${state.plan.length}`;
       if (layoutRevision !== previousLayoutRevision) {
         try {
           resize({
             env,
-            expanded,
+            expanded: controls.expanded,
             planLength: state.plan.length,
           });
         } catch {
@@ -366,18 +503,22 @@ export async function runRenderer({
       const revision = renderRevision({
         controlCount: seenControls.size,
         eventCount: seenEvents.size,
-        expanded,
+        expanded: controls.expanded,
         height,
+        interactionMode: controls.interactionMode,
         now,
+        selectionControls: controls.selectionControls,
         width,
       });
 
       if (revision !== previousRevision) {
         const frame = renderHud(state, {
           color: env.NO_COLOR === undefined,
-          expanded,
+          expanded: controls.expanded,
           height,
+          interactionMode: controls.interactionMode,
           now,
+          selectionControls: controls.selectionControls,
           width,
         });
         const output = diffFrame(previousFrame, frame);
