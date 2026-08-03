@@ -22,13 +22,15 @@ export function stateRoot(env = process.env) {
 }
 
 /**
- * @param {{cwd: string, launchId?: string, startedAtMs?: number, env?: NodeJS.ProcessEnv}} options
+ * @param {{cwd: string, launchId?: string, startedAtMs?: number, env?: NodeJS.ProcessEnv, ownsTmuxServer?: boolean, selectionControls?: boolean}} options
  */
 export function createRunDirectory({
   cwd,
   launchId = randomUUID(),
   startedAtMs = Date.now(),
   env = process.env,
+  ownsTmuxServer = false,
+  selectionControls = false,
 }) {
   const root = stateRoot(env);
   ensurePrivateDirectory(root);
@@ -42,6 +44,8 @@ export function createRunDirectory({
     cwd,
     launchId,
     magic: RUN_DIRECTORY_MAGIC,
+    ownsTmuxServer,
+    selectionControls,
     startedAtMs,
   });
   return runDirectory;

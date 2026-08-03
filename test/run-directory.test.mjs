@@ -4,7 +4,10 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { STATE_ROOT_ENV } from "../src/constants.mjs";
+import {
+  RUN_DIRECTORY_MAGIC,
+  STATE_ROOT_ENV,
+} from "../src/constants.mjs";
 import {
   cleanupStaleRuns,
   consumeRunJson,
@@ -26,10 +29,20 @@ test("run directories and event files are private and scoped", (context) => {
     cwd: "/workspace",
     env,
     launchId: "launch",
+    ownsTmuxServer: true,
+    selectionControls: true,
     startedAtMs: 1_000,
   });
 
   assert.equal(validateRunDirectory(runDirectory, env), true);
+  assert.deepEqual(readRunJson(runDirectory, "meta.json", env), {
+    cwd: "/workspace",
+    launchId: "launch",
+    magic: RUN_DIRECTORY_MAGIC,
+    ownsTmuxServer: true,
+    selectionControls: true,
+    startedAtMs: 1_000,
+  });
   assert.equal(fs.statSync(runDirectory).mode & 0o777, 0o700);
   assert.equal(
     fs.statSync(path.join(runDirectory, "controls")).mode & 0o777,
