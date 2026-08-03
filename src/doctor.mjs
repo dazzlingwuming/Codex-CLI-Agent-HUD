@@ -4,7 +4,6 @@ import { spawnSync } from "node:child_process";
 
 import { HOOK_EVENTS, HOOK_MARKER } from "./constants.mjs";
 import { codexHome } from "./hooks-config.mjs";
-import { isJetBrainsTerminal } from "./interaction-mode.mjs";
 import {
   hasShellIntegration,
   shellRcPath,
@@ -210,9 +209,9 @@ function terminalCheck(env) {
     return {
       name: "terminal",
       status: "warn",
-      detail: `${identity || "JetBrains terminal"} (manual verification required; use IDE 2025.3.2+)`,
+      detail: `${identity || "JetBrains terminal"} (manual GUI verification required: persistent tmux selection and explicit copy action; use IDE 2025.3.2+)`,
       recovery:
-        "PyCharm copy mode is not verified automatically: turn Mouse reporting on, turn Copy to clipboard on selection off, and keep Terminal Copy bound to ⌘C. Doctor cannot read or change IDE settings.",
+        "Turn Mouse reporting on and Copy to clipboard on selection off. In a HUD-owned isolated tmux session, verify that the tmux highlight survives wheel scrolling and that [复制所选] or Enter in selection/history mode copies only on demand. JetBrains native selection may be transient; tmux highlight is the source of truth. Doctor cannot read or change IDE settings.",
     };
   }
   if (
@@ -222,17 +221,35 @@ function terminalCheck(env) {
   ) {
     return {
       name: "terminal",
-      status: "ok",
-      detail: `${identity || "xterm-compatible terminal"} (PyCharm-only controls disabled; HUD scrollback available)`,
+      status: "warn",
+      detail: `${identity || "xterm-compatible terminal"} (manual GUI verification required: persistent tmux selection and explicit copy action)`,
+      recovery:
+        "In a HUD-owned isolated tmux session, verify selection while holding the mouse button and scrolling, selection after release and scrolling, and explicit copy through [复制所选] or Enter in selection/history mode.",
     };
   }
   return {
     name: "terminal",
     status: "warn",
-    detail: `${identity || "unknown terminal"} (PyCharm-only controls disabled; HUD scrollback available)`,
+    detail: `${identity || "unknown terminal"} (manual GUI verification required: persistent tmux selection and explicit copy action)`,
     recovery:
-      "Use an xterm-compatible macOS terminal; run an interactive smoke test before relying on mouse controls.",
+      "Use an xterm-compatible macOS terminal; in a HUD-owned isolated tmux session, manually verify persistent selection and explicit copy before relying on mouse controls.",
   };
+}
+
+/**
+ * Keep doctor independent from the optional HUD control renderer: diagnostics
+ * still need to identify JetBrains-specific manual settings even if controls
+ * are unavailable in a particular terminal.
+ *
+ * @param {NodeJS.ProcessEnv} env
+ */
+function isJetBrainsTerminal(env) {
+  return /jetbrains|jediterm|pycharm|intellij/u.test(
+    [env.TERM_PROGRAM, env.TERMINAL_EMULATOR, env.__CFBundleIdentifier]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase(),
+  );
 }
 
 /**

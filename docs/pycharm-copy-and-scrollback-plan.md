@@ -1,86 +1,61 @@
-# PyCharm 双模式复制与终端滚动修复计划
+# 持久 tmux 选区与明确复制计划
 
-## 目标与最终行为
+> 本文替代原先的“PyCharm 双模式复制”方案。旧方案试图在 PyCharm 原生选区和 tmux 选区之间切换；实际运行证明两个坐标系统会互相干扰，因此不再保留模式切换。
 
-- 完成一次 `codex-hud setup` 后，用户仍然直接执行 `codex`，自动进入 HUD。
-- PyCharm 终端底部显示 `[复制模式]` 和 `[HUD 模式]` 两个可点击按钮，默认进入 HUD 模式。
-- 复制模式禁止 tmux 再创建第二层鼠标选区，只保留 PyCharm 原生选区。
-- 松开鼠标后选区继续保留；剪贴板不会自动变化，只有按 `⌘C` 才复制。
-- 向上查看历史记录后，拖选、松开和再次单击都不跳回底部；只有按 `q` 才退出历史模式。
-- 保留现有动画抑制、同步帧和差量刷新，运行过程中不得重新出现高频闪烁。
+## 已确认的问题模型
 
-核心原则：复制模式不是代替 PyCharm 的复制功能，而是关闭 tmux 的第二套选区。只有一个选区坐标系统时，动态位置偏移才可能消失。
+- 在 HUD 模式中，tmux 和 JetBrains Terminal 都可能响应一次拖选，造成两层高亮。
+- JetBrains 的原生高亮会随滚轮或终端重绘消失；它不是可靠的持久选区。
+- “复制模式”按钮偶发被 IDE 吞掉，且用户在 HUD 模式下仍可复制，说明双模式既不稳定也没有清晰边界。
+- 已用 tmux 3.7b 验证：由 tmux 管理的选区可以在按住左键滚轮，以及松开左键后继续滚轮时保留。因此修复应让 tmux 成为唯一受支持的选区状态。
 
-## 接口与实现改动
+## 目标行为
 
-### 模式状态和点击协议
+完成一次 `codex-hud setup` 后，用户仍然直接执行 `codex`，自动进入 HUD。HUD 自己创建隔离 tmux server 时：
 
-内部模式固定为：
+1. 上方 Codex pane 的文本拖选由 tmux 持久管理；鼠标位置与 tmux 高亮必须一致。
+2. 左键按住时滚轮、松开左键后滚轮，均不清除 tmux 选区，不退出历史，也不跳回底部。
+3. HUD 只显示一个 `[复制所选]` 动作，不再显示“HUD 模式 / 复制模式”。
+4. 仅点击 `[复制所选]`，或在选择/历史模式按 `Enter`，才会调用 macOS clipboard；拖选、松手、滚轮、Todo 点击和刷新不得自动复制。
+5. `q` 是退出 copy-mode / 历史并返回 Codex 输入的明确动作。
+6. IDE 原生选区可能短暂叠加或消失；验收只以 tmux 高亮为准。若 HUD 按钮被 IDE 吞掉，`Enter` 是可靠备用入口。
+7. 用户已有 tmux server 的 key tables 与选择行为不修改；该场景不显示复制动作。
 
-```text
-hud | copy
-```
+## 共享接口与实现边界
 
-新增原子控制事件：
+### 能力门控与 HUD UI
 
-```json
-{
-  "version": 1,
-  "kind": "interaction.mode.set",
-  "mode": "hud",
-  "observedAtMs": 0
-}
-```
+- 运行元数据使用 `copyActionControls`，只在 `ownsTmuxServer === true` 的 HUD 自有 isolated tmux 会话启用。
+- 渲染器与点击命中计算共用一个 `[复制所选]` 的 CJK 宽度安全矩形；窄终端下安全隐藏，不能与 Todo 点击区域重叠。
+- HUD 点击协议从模式设置改为明确复制动作；点击 Todo 仍只展开或收起 Todo。
+- 点击动作应先确认当前 tmux 选区存在，再显式调用 macOS clipboard。无选区、非法坐标、过期控制事件或按钮不可用时必须安全忽略，绝不写入剪贴板。
+- `Enter` 绑定为复制动作的备用入口；它只在选择/历史模式生效，不改变普通 Codex 输入的 Enter。
 
-- 使用显式 `set`，不使用 `toggle`；重复点击当前模式是幂等操作。
-- HUD 每次启动都从 `hud` 开始，不跨会话持久化。
-- 非法、过期或未来版本事件安全忽略。
-- 增加隐藏命令 `__hud-click`，接收 tmux 的鼠标行列、HUD 宽度和 pane 信息。
-- 渲染和点击判断共用同一套按钮矩形计算，并按终端显示宽度处理中文字符。
-- 模式切换先应用 tmux 策略，再写控制事件；失败时回滚并报告降级。
-- 点击模式按钮不触发 Todo；其他 HUD 区域保留现有 Todo 展开与收起行为。
+### tmux 行为
 
-### tmux 鼠标策略
+- HUD 自有 isolated server 维持 `mouse on`，但选择、滚动和复制均由 tmux 统一处理。
+- `MouseDown1Pane`、`MouseDrag1Pane`、`MouseDragEnd1Pane`、双击和三击只管理 tmux 选区；`MouseDragEnd` 使用停止选择，不调用自动复制、`cancel`、`pbcopy`、OSC52 或 `copy-pipe`。
+- 滚轮进入并停留在 copy-mode；鼠标选择路径和 HUD 重绘不能把视口拉回底部。
+- `[复制所选]` 与选择/历史模式的 `Enter` 是仅有的 macOS clipboard 写入入口。复制动作本身不应成为隐式退出历史的替代；退出由 `q` 负责。
+- 隔离 server 关闭 tmux 自动写系统剪贴板的能力，避免无意复制。
+- 在嵌套/用户已有 tmux 中不安装或改写 `copy-mode` / `copy-mode-vi` key tables，也不注入复制按钮。
 
-新策略只安装到 HUD 自己创建的隔离 tmux server，避免修改用户已有 server 的全局键表。
+### GUI 与文档边界
 
-HUD 模式：
+- JetBrains 的 Mouse reporting 仍需开启，且 **Copy to clipboard on selection** 需关闭，防止 IDE 在松手时自动写剪贴板。
+- HUD 无法读取或控制 IDE 的原生选区；它的暂时消失不是 tmux 选区是否存在的可靠信号。
+- `doctor` 只报告“持久 tmux 选区 / 明确复制需要人工 GUI 验收”，不声称已经验证 PyCharm 设置或 GUI 行为。
+- README 不承诺自动 GUI 验收；明确列出按住左键滚轮、松开后滚轮、按钮复制、`Enter` 备用、Todo 与防闪烁的验收步骤。
 
-- 保持 `mouse on` 并保留顶部 Codex pane 的正常鼠标交互。
-- 在 `copy-mode` 和 `copy-mode-vi` 中，按下清除旧选区但保持位置，拖动开始选择，松开执行 `stop-selection`。
-- 双击和三击选择单词或整行后停止选择，不复制、不退出。
-- 滚轮不变，`q` 明确退出历史模式。
-
-复制模式：
-
-- 仍保持 `mouse on`，确保底部两个按钮始终可点击。
-- 顶部 pane 的单击只选择 pane，单击、拖动、松开、双击和三击均不触发 tmux 选区。
-- 已进入历史模式时同样禁止第二层选区，但滚轮和 `q` 继续有效。
-- 鼠标路径禁止调用 `copy-pipe`、`copy-selection`、`cancel`、`pbcopy` 或 OSC52。
-- 隔离 server 关闭 tmux 自动写系统剪贴板的能力。
-
-### 兼容性与生命周期
-
-- 双按钮仅在 JetBrains/PyCharm 终端且本次 HUD 拥有隔离 tmux server 时启用。
-- Apple Terminal、VS Code 和其他终端继续显示 HUD，并获得历史位置修复，但不显示 PyCharm 复制按钮。
-- 在用户已有 tmux 中启动时隐藏复制按钮，避免 server 全局键表影响其他会话。
-- 准确保存并恢复嵌套 tmux 的 `mouse`、`status`、`history-limit`、`remain-on-exit`、pane 标题和原始鼠标绑定。
-- 区分本地设置与继承设置；继承项使用 unset 恢复，不能写空字符串覆盖。
-- 从首次修改 tmux 状态之前进入 `try/finally`；恢复失败报告降级，但不覆盖 Codex 原始退出码。
-- `doctor` 只报告 JetBrains 检测和人工验证要求，不声称已自动确认 IDE 设置。
-
-## 验证与验收
+## 自动验证与人工验收
 
 自动测试覆盖：
 
-- 模式默认值、显式切换、重复点击、非法事件和能力门控。
-- 完整、紧凑和窄布局，中文显示宽度及按钮绘制/点击区域一致性。
-- 模式按钮与 Todo 点击互不干扰。
-- HUD 模式松开后仍在历史位置，下一次单击只清除选区。
-- 复制模式的选择类鼠标事件不触发 tmux，滚轮和 `q` 正常。
-- 所有鼠标路径不自动复制或退出。
-- Codex 非零退出、HUD pane 异常和模式失败时正确清理或恢复。
-- 自动启动、静态动画、同步帧和差异重绘不回归。
+- 单一复制动作的渲染、命中、能力门控、窄屏隐藏和 Todo 点击隔离。
+- 复制动作只在 HUD 自有 isolated tmux 生效；用户已有 tmux 不改 key tables。
+- tmux 选区在开始选择、停止选择、按住滚轮和松开后滚轮均保留；滚轮与 `q` 行为不回归。
+- 鼠标路径没有自动 copy / cancel / clipboard 调用；只有按钮动作和 copy-mode 的 `Enter` 可触发显式复制。
+- Codex 非零退出、HUD pane 异常和 tmux 清理不覆盖原始退出码，动画抑制与差量重绘不回归。
 
 集成后执行：
 
@@ -92,39 +67,19 @@ codex-hud doctor
 codex-hud doctor --json
 ```
 
-PyCharm 2025.3.6 Reworked Terminal 人工验收：
+真实 GUI 验收必须在 PyCharm / IntelliJ 中完成：
 
-1. 直接执行 `codex`，HUD 自动出现且默认为 HUD 模式。
-2. Codex 运行中和停止后都无高频闪烁。
-3. Todo 可以点击展开和收起。
-4. 进入复制模式后两个模式按钮仍可点击。
-5. 拖选包含中文、英文、自动换行和多行的唯一文本，实际高亮与鼠标位置一致。
-6. 松开后高亮不消失，系统剪贴板仍保持哨兵内容。
-7. 按 `⌘C` 后只复制选中文字，且不打断 Codex。
-8. 滚动到早期记录后拖选、松开、再单击，视口不跳到底部。
-9. 按 `q` 后才退出历史模式。
-10. 切回 HUD 模式后，Todo、滚轮和原有交互恢复。
+1. 直接运行 `codex`，确认 HUD 自动出现、Todo 可点击、没有“HUD 模式 / 复制模式”按钮。
+2. 拖选中英文、多行、自动换行的非敏感文本，以 tmux 高亮而非 IDE 临时高亮作为判断依据。
+3. 左键按住时上下滚轮，确认选区、视口和剪贴板哨兵都保持不变。
+4. 松开后再次上下滚轮，确认选区与历史位置仍保留，未自动复制或退出。
+5. 点击 `[复制所选]`，确认此时才写入剪贴板且 Codex 不被中断；若 IDE 吞掉按钮，在选择/历史模式按 `Enter` 重复验证。
+6. 按 `q` 后才退出历史模式；重复 Todo 展开/收起和运行中防闪烁检查。
+7. 在用户已有 tmux server 中重复启动，确认不显示复制动作、不改变其 key tables。
 
-如果 PyCharm 仍产生双层选区、松开即丢失选区或 `⌘C` 中断 Codex，复制模式标记为 `degraded / not verified`，不得宣传为已完成；历史跳底修复可独立保留。
+自动测试通过不等于 GUI 已验收。任一项出现 tmux 选区丢失、自动复制、视口跳底、Codex 被中断或按钮和 `Enter` 都不可用时，结论必须写为 `degraded / not verified`。
 
-## 子 Agent 与 Git 执行安排
+## Git 与素材边界
 
-- 集成分支为 `feat/pycharm-copy-and-scrollback`。
-- 子 Agent 统一使用 `gpt-5.6-terra`、`max`，不使用 sol。
-- 先提交模式常量、能力判断和按钮坐标共享契约。
-- 三个短生命周期分支并行执行：
-  - `agent/tmux-scrollback`：tmux 鼠标策略、历史位置、生命周期恢复及测试。
-  - `agent/hud-copy-ui`：HUD 按钮、点击命中、控制状态、渲染及测试。
-  - `agent/docs-doctor`：doctor、README、兼容说明及测试。
-- 主 Agent 独占 CLI 接线和最终集成，避免共享入口冲突。
-- 每个独立任务验证后 commit 并 push；主 Agent 按共享契约、tmux、HUD、文档顺序集成。
-- 本轮只提交和推送分支，不自动 merge、部署、关闭 Issue 或删除远端分支。
-
-## 假设与边界
-
-- 当前版本继续只支持 macOS。
-- 用户要的是自主选择后按 `⌘C` 复制，绝不采用松开鼠标自动复制。
-- PyCharm 双按钮优先于所有终端统一提供按钮。
-- Apple Terminal 和 VS Code 只承诺 HUD 与历史滚动不回归，不在本次宣称完成原生复制适配。
-- 不覆盖用户显式传入的 Codex TUI 配置。
-- 不重新加入初始任务文档或未获确认的参考素材。
+- 本轮在功能分支完成独立、可验证的小提交并推送；不自动 merge、部署或关闭 Issue。
+- 保留用户提供的四张参考截图；不重新加入或发布 `doc/初始.md`，也不把本计划文档打包进 npm 发布物。
