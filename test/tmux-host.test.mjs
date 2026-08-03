@@ -11,10 +11,8 @@ import {
   STATE_ROOT_ENV,
 } from "../src/constants.mjs";
 import { quoteShellArgument } from "../src/hooks-config.mjs";
-import { modeButtonLayout } from "../src/interaction-mode.mjs";
 import {
   createRunDirectory,
-  readControlFiles,
   readRunJson,
   removeRunDirectory,
   writeControlAtomic,
@@ -24,13 +22,12 @@ import {
 import {
   chooseHudHeight,
   chooseHudViewHeight,
+  copyHudSelection,
   hasAlternateScreenOverride,
   hasAnimationsOverride,
   hasStatusLineOverride,
   hudMouseBindings,
   isolatedTmuxSocketPath,
-  readHudInteractionMode,
-  setHudInteractionMode,
   runInsideTmux,
   tmuxClientFeatureArgs,
   todoMouseBinding,
@@ -147,23 +144,25 @@ test("Todo mouse binding toggles only the HUD pane", () => {
     hudPane: "%2",
     nodePath: "/usr/bin/node",
     runDirectory: "/tmp/Codex HUD/run",
-    usesInteractionModes: true,
   });
   const command = binding.join(" ");
 
   assert.match(command, /MouseDown1Pane/u);
   assert.match(command, /mouse_pane.*%2/u);
   assert.match(command, /__hud-click/u);
-  assert.match(command, /#\{session_id\}/u);
+  assert.match(command, /__hud-click.*%1.*#\{mouse_x\}/u);
   assert.match(command, /#\{mouse_x\}/u);
   assert.match(command, /#\{mouse_y\}/u);
   assert.match(command, /#\{pane_width\}/u);
-  assert.doesNotMatch(command, /pane_left|pane_top|__toggle/u);
-  assert.match(command, /@codex_hud_interaction_mode/u);
-  assert.match(command, /select-pane/u);
+  assert.doesNotMatch(
+    command,
+    /pane_left|pane_top|__toggle|#\{session_id\}|@codex_hud_interaction_mode/u,
+  );
+  assert.match(command, /MouseDown1Pane.*select-pane -t =/u);
+  assert.doesNotMatch(command, /MouseDown1Pane.*copy-mode -M/u);
 });
 
-test("HUD mouse bindings retain scrollback selection without automatic copy", () => {
+test("HUD mouse bindings own selection, scrollback, and explicit copy only", () => {
   const bindings = hudMouseBindings({
     codexPane: "%1",
     entryPath: "/tmp/Codex HUD/cli.mjs",
@@ -177,7 +176,7 @@ test("HUD mouse bindings retain scrollback selection without automatic copy", ()
     const tableBindings = bindings.filter(
       (binding) => binding[2] === table,
     );
-    assert.equal(tableBindings.length, 5);
+    assert.equal(tableBindings.length, 9);
     assert.match(
       tableBindings.find((binding) => binding[3] === "MouseDown1Pane")?.join(" ") ?? "",
       /clear-selection/u,
@@ -198,12 +197,29 @@ test("HUD mouse bindings retain scrollback selection without automatic copy", ()
       tableBindings.find((binding) => binding[3] === "MouseDown1Pane")?.join(" ") ?? "",
       /__hud-click/u,
     );
+    assert.match(
+      tableBindings.find((binding) => binding[3] === "WheelUpPane")?.join(" ") ?? "",
+      /scroll-up/u,
+    );
+    assert.match(
+      tableBindings.find((binding) => binding[3] === "WheelDownPane")?.join(" ") ?? "",
+      /scroll-down/u,
+    );
+    assert.match(
+      tableBindings.find((binding) => binding[3] === "q")?.join(" ") ?? "",
+      /send-keys -X cancel/u,
+    );
+    const enter = tableBindings.find((binding) => binding[3] === "Enter")?.join(" ") ?? "";
+    assert.match(enter, /selection_present/u);
+    assert.match(enter, /selection_present.*copy-pipe-no-clear -CP.*\/usr\/bin\/pbcopy/u);
   }
 
-  assert.match(source, /@codex_hud_interaction_mode/u);
+  assert.match(source, /copy-mode -M/u);
+  assert.match(source, /copy-mode -e.*scroll-up/u);
+  assert.doesNotMatch(source, /@codex_hud_interaction_mode/u);
   assert.doesNotMatch(
     source,
-    /copy-pipe|copy-selection|cancel|pbcopy|OSC52/u,
+    /copy-pipe-and-cancel|copy-selection-and-cancel|OSC52/u,
   );
 });
 
@@ -382,10 +398,10 @@ test("live tmux host enables scrollback and expands Todo controls", async (conte
   const env = { ...process.env, [STATE_ROOT_ENV]: root };
   const runDirectory = createRunDirectory({
     cwd: base,
+    copyActionControls: true,
     env,
     launchId: "interaction",
     ownsTmuxServer: true,
-    selectionControls: true,
     startedAtMs: Date.now(),
   });
   env[RUN_DIRECTORY_ENV] = runDirectory;
@@ -466,10 +482,7 @@ test("live tmux host enables scrollback and expands Todo controls", async (conte
   );
   assert.ok(hudPane);
   assert.equal(await waitForPaneHeight(socket, hudPane.id, 6), true);
-  assert.match(
-    await waitForPaneContent(socket, hudPane.id, /复制模式.*HUD 模式/u),
-    /○ 复制模式.*● HUD 模式/u,
-  );
+  assert.match(await waitForPaneContent(socket, hudPane.id, /Codex HUD/u), /Codex HUD/u);
 
   assert.equal(
     tmuxText(socket, ["show-options", "-v", "-t", "hud", "mouse"]).trim(),
@@ -485,36 +498,27 @@ test("live tmux host enables scrollback and expands Todo controls", async (conte
     ]).trim(),
     "100000",
   );
-  const serverEnv = tmuxEnvironment(socket, codexPane.id, env);
-  assert.equal(readHudInteractionMode("$0", serverEnv), "hud");
-  assert.equal(setHudInteractionMode("$0", "copy", serverEnv), "copy");
-  assert.equal(readHudInteractionMode("$0", serverEnv), "copy");
-  assert.equal(
-    tmuxText(socket, ["show-options", "-v", "-t", "hud", "mouse"]).trim(),
-    "on",
-  );
-  assert.throws(
-    () => setHudInteractionMode("$0", "invalid", serverEnv),
-    /Invalid HUD interaction mode/u,
-  );
-  assert.equal(setHudInteractionMode("$0", "hud", serverEnv), "hud");
-
-  assert.match(
-    tmuxText(socket, ["list-keys", "-T", "root"]),
-    /copy-mode/u,
-  );
-  assert.match(
-    tmuxText(socket, ["list-keys", "-T", "root"]),
-    /__hud-click/u,
-  );
+  const rootBindings = tmuxText(socket, ["list-keys", "-T", "root"]);
+  assert.match(rootBindings, /MouseDown1Pane.*select-pane -t =/u);
+  assert.doesNotMatch(rootBindings, /MouseDown1Pane.*copy-mode -M/u);
+  assert.match(rootBindings, /MouseDrag1Pane.*copy-mode -M/u);
+  assert.match(rootBindings, /WheelUpPane.*copy-mode -e.*scroll-up/u);
+  assert.match(rootBindings, /__hud-click/u);
+  assert.doesNotMatch(rootBindings, /@codex_hud_interaction_mode/u);
   for (const table of ["copy-mode", "copy-mode-vi"]) {
     const tableBindings = tmuxText(socket, ["list-keys", "-T", table]);
     assert.match(tableBindings, /MouseDown1Pane.*clear-selection/u);
     assert.match(tableBindings, /MouseDragEnd1Pane.*stop-selection/u);
     assert.match(tableBindings, /DoubleClick1Pane.*select-word.*stop-selection/u);
     assert.match(tableBindings, /TripleClick1Pane.*select-line.*stop-selection/u);
+    assert.match(tableBindings, /WheelUpPane.*scroll-up/u);
+    assert.match(tableBindings, /WheelDownPane.*scroll-down/u);
+    assert.match(
+      tableBindings,
+      /Enter.*selection_present.*copy-pipe-no-clear -CP.*\/usr\/bin\/pbcopy/u,
+    );
     assert.doesNotMatch(
-      tableBindings.match(/^.*(?:MouseDown1Pane|MouseDrag1Pane|MouseDragEnd1Pane|DoubleClick1Pane|TripleClick1Pane).*$/gmu)?.join("\n") ?? "",
+      tableBindings.match(/^.*(?:MouseDown1Pane|MouseDrag1Pane|MouseDragEnd1Pane|DoubleClick1Pane|TripleClick1Pane|Wheel(?:Up|Down)Pane).*$/gmu)?.join("\n") ?? "",
       /copy-pipe|copy-selection|cancel|pbcopy|OSC52/u,
     );
     assert.match(tableBindings, /^.*q\s+send-keys -X cancel$/mu);
@@ -767,16 +771,6 @@ test("nested tmux restores local and inherited interaction state", async (contex
     tmuxKeyLine(socket, "root", "MouseDown1Pane") ?? "",
     /__hud-click/u,
   );
-  assert.equal(
-    tmuxText(socket, [
-      "show-options",
-      "-qv",
-      "-t",
-      "outer",
-      "@codex_hud_interaction_mode",
-    ]).trim(),
-    "",
-  );
   assert.equal(tmuxText(socket, ["list-keys", "-T", "copy-mode"]), originalCopyMode);
   assert.equal(
     tmuxText(socket, ["list-keys", "-T", "copy-mode-vi"]),
@@ -854,15 +848,15 @@ test("nested tmux restores local and inherited interaction state", async (contex
   assert.equal(removeRunDirectory(runDirectory, env), true);
 });
 
-test("a HUD click still routes while the top pane is in copy mode", async (context) => {
+test("HUD-owned tmux keeps selection through scroll and copies only explicitly", async (context) => {
   const base = fs.mkdtempSync(
     path.join(
       os.tmpdir(),
-      "codex-hud-#{pane_id}-#(printf x)-mouse-route-",
+      "codex-hud-#{pane_id}-#(printf x)-persistent-selection-",
     ),
   );
   const root = path.join(base, "state");
-  const socket = `codex-hud-mouse-route-${process.pid}-${Date.now()}`;
+  const socket = `codex-hud-persistent-selection-${process.pid}-${Date.now()}`;
   context.after(() => {
     spawnSync("tmux", ["-L", socket, "kill-server"], {
       stdio: "ignore",
@@ -871,17 +865,35 @@ test("a HUD click still routes while the top pane is in copy mode", async (conte
     fs.rmSync(base, { recursive: true });
   });
 
+  const copiedPath = path.join(base, "copied-selection.txt");
+  const copyFixture = path.join(base, "copy-selection-fixture");
+  fs.writeFileSync(
+    copyFixture,
+    ["#!/bin/sh", `/bin/cat > ${quoteShellArgument(copiedPath)}`, ""].join("\n"),
+    { mode: 0o700 },
+  );
+  const clickCapture = path.join(base, "hud-click.txt");
+  const clickFixture = path.join(base, "hud-click.mjs");
+  fs.writeFileSync(
+    clickFixture,
+    [
+      'import fs from "node:fs";',
+      `fs.writeFileSync(${JSON.stringify(clickCapture)}, process.argv.slice(2).join("\\t"));`,
+      "",
+    ].join("\n"),
+    { mode: 0o600 },
+  );
+
   /** @type {NodeJS.ProcessEnv} */
   const env = { ...process.env, [STATE_ROOT_ENV]: root };
   const runDirectory = createRunDirectory({
     cwd: base,
+    copyActionControls: true,
     env,
-    launchId: "mouse-route",
+    launchId: "persistent-selection",
     ownsTmuxServer: true,
-    selectionControls: true,
     startedAtMs: Date.now(),
   });
-  const entryPath = fileURLToPath(new URL("../src/cli.mjs", import.meta.url));
 
   const started = spawnSync(
     "tmux",
@@ -893,7 +905,7 @@ test("a HUD click still routes while the top pane is in copy mode", async (conte
       "new-session",
       "-d",
       "-s",
-      "route",
+      "persistent",
       "-x",
       "100",
       "-y",
@@ -908,7 +920,7 @@ test("a HUD click still routes while the top pane is in copy mode", async (conte
   const codexPane = tmuxText(socket, [
     "list-panes",
     "-t",
-    "route",
+    "persistent",
     "-F",
     "#{pane_id}",
   ]).trim();
@@ -925,40 +937,189 @@ test("a HUD click still routes while the top pane is in copy mode", async (conte
     codexPane,
     "sleep 60",
   ]).trim();
-  tmuxText(socket, ["set-option", "-t", "route", "status", "off"]);
-  tmuxText(socket, ["set-option", "-t", "route", "mouse", "on"]);
-  tmuxText(socket, [
-    "set-option",
-    "-t",
-    "route",
-    "@codex_hud_interaction_mode",
-    "hud",
-  ]);
+  tmuxText(socket, ["set-option", "-t", "persistent", "status", "off"]);
+  tmuxText(socket, ["set-option", "-t", "persistent", "mouse", "on"]);
   const bindingOptions = {
     codexPane,
-    entryPath,
+    copyCommand: copyFixture,
+    entryPath: clickFixture,
     hudPane,
     nodePath: process.execPath,
     runDirectory,
   };
-  tmuxText(
-    socket,
-    todoMouseBinding({ ...bindingOptions, usesInteractionModes: true }),
-  );
+  tmuxText(socket, todoMouseBinding(bindingOptions));
   for (const binding of hudMouseBindings(bindingOptions)) {
     tmuxText(socket, binding);
   }
   tmuxText(socket, ["select-pane", "-t", codexPane]);
   assert.equal(await waitForHistory(socket, codexPane), true);
+  const [paneLeft, paneTop, paneHeight] = tmuxText(socket, [
+    "display-message",
+    "-p",
+    "-t",
+    codexPane,
+    "#{pane_left}\t#{pane_top}\t#{pane_height}",
+  ])
+    .trim()
+    .split("\t")
+    .map(Number);
+
+  const column = paneLeft + 8;
+  const row = paneTop + 2;
+  const dragRow = Math.min(paneTop + 6, paneTop + paneHeight - 2);
+
+  await sendTmuxMouseEvents({
+    events: [
+      { code: 0, column, row, suffix: "M" },
+      { code: 0, column, row, suffix: "m" },
+    ],
+    session: "persistent",
+    socket,
+  });
+  const plainClick = paneCopyState(socket, codexPane);
+  assert.equal(plainClick.inMode, "0");
+  assert.equal(plainClick.selectionPresent, "0");
+
+  await sendTmuxMouseEvents({
+    events: [
+      { code: 0, column, row, suffix: "M" },
+      { code: 32, column, row: row + 1, suffix: "M" },
+      { code: 32, column, row: dragRow, suffix: "M" },
+      { code: 0, column, row: dragRow, suffix: "m" },
+    ],
+    session: "persistent",
+    socket,
+  });
+  const mouseSelection = paneCopyState(socket, codexPane);
+  assert.equal(
+    mouseSelection.inMode,
+    "1",
+    JSON.stringify({
+      codexPane,
+      hudPane,
+      mouseSelection,
+      paneHeight,
+      paneLeft,
+      paneTop,
+      row,
+      rootDrag: tmuxKeyLine(socket, "root", "MouseDrag1Pane"),
+    }),
+  );
+  assert.equal(mouseSelection.selectionPresent, "1");
+  tmuxText(socket, ["send-keys", "-t", codexPane, "q"]);
+  assert.equal(paneCopyState(socket, codexPane).inMode, "0");
+
   tmuxText(socket, ["copy-mode", "-e", "-t", codexPane]);
-  tmuxText(socket, ["send-keys", "-t", codexPane, "-X", "history-top"]);
-  const historical = paneCopyState(socket, codexPane);
-  assert.equal(historical.inMode, "1");
-  const layout = modeButtonLayout(100, "hud");
-  assert.ok(layout);
-  const copyButton = layout.buttons.find((button) => button.mode === "copy");
-  assert.ok(copyButton);
-  const [paneLeft, paneTop] = tmuxText(socket, [
+  tmuxText(socket, ["send-keys", "-t", codexPane, "-X", "-N", "20", "scroll-up"]);
+  const beforeSelection = paneCopyState(socket, codexPane);
+  assert.equal(beforeSelection.inMode, "1");
+  assert.notEqual(beforeSelection.scrollPosition, "0");
+  assert.equal(beforeSelection.selectionPresent, "0");
+  tmuxText(socket, ["send-keys", "-t", codexPane, "Enter"]);
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(fs.existsSync(copiedPath), false);
+  const serverEnv = tmuxEnvironment(socket, codexPane, env);
+  assert.equal(
+    copyHudSelection(codexPane, serverEnv, { copyCommand: copyFixture }),
+    false,
+  );
+  assert.equal(copyHudSelection("not-a-pane", serverEnv), false);
+  assert.equal(fs.existsSync(copiedPath), false);
+
+  tmuxText(socket, ["send-keys", "-t", codexPane, "-X", "begin-selection"]);
+  tmuxText(socket, ["send-keys", "-t", codexPane, "-X", "cursor-down"]);
+  const selecting = paneCopyState(socket, codexPane);
+  assert.equal(selecting.inMode, "1");
+  assert.equal(selecting.selectionPresent, "1");
+
+  await sendTmuxMouseEvents({
+    events: [{ code: 64, column, row, suffix: "M" }],
+    session: "persistent",
+    socket,
+  });
+  const heldWheel = paneCopyState(socket, codexPane);
+  assert.equal(heldWheel.inMode, "1");
+  assert.equal(heldWheel.selectionPresent, "1");
+  assert.notEqual(heldWheel.scrollPosition, "0");
+
+  tmuxText(socket, ["send-keys", "-t", codexPane, "-X", "stop-selection"]);
+  const stoppedSelection = paneCopyState(socket, codexPane);
+  assert.equal(stoppedSelection.selectionPresent, "1");
+  await sendTmuxMouseEvents({
+    events: [{ code: 65, column, row, suffix: "M" }],
+    session: "persistent",
+    socket,
+  });
+  const stoppedWheel = paneCopyState(socket, codexPane);
+  assert.equal(stoppedWheel.inMode, "1");
+  assert.equal(stoppedWheel.selectionPresent, "1");
+  assert.notEqual(stoppedWheel.scrollPosition, "0");
+
+  tmuxText(socket, [
+    "send-keys",
+    "-t",
+    codexPane,
+    "-X",
+    "copy-selection-no-clear",
+    "-C",
+    "expected-selection",
+  ]);
+  const expectedBuffer = tmuxBufferName(socket, "expected-selection");
+  assert.ok(expectedBuffer);
+  const expectedSelection = tmuxText(socket, [
+    "show-buffer",
+    "-b",
+    expectedBuffer,
+  ]);
+  tmuxText(socket, ["delete-buffer", "-b", expectedBuffer]);
+
+  const fixtureProbe = spawnSync(copyFixture, [], {
+    encoding: "utf8",
+    env: serverEnv,
+    input: "fixture-probe",
+  });
+  assert.equal(
+    fixtureProbe.status,
+    0,
+    fixtureProbe.error?.message ?? "copy fixture execution failed",
+  );
+  fs.truncateSync(copiedPath, 0);
+  const beforeExplicitCopy = paneCopyState(socket, codexPane);
+  assert.equal(
+    copyHudSelection(codexPane, serverEnv, { copyCommand: copyFixture }),
+    true,
+    JSON.stringify({
+      serverEnv: serverEnv.TMUX,
+      state: tmuxText(socket, [
+        "display-message",
+        "-p",
+        "-t",
+        codexPane,
+        "#{pane_in_mode}\t#{pane_mode}\t#{selection_present}\t#{socket_path},#{pid}",
+      ]).trim(),
+    }),
+  );
+  assert.equal(await waitForFileText(copiedPath), expectedSelection);
+  assert.deepEqual(paneCopyState(socket, codexPane), beforeExplicitCopy);
+  assert.doesNotMatch(
+    tmuxText(socket, ["list-buffers", "-F", "#{buffer_name}"]),
+    /codex-hud-selection-/u,
+  );
+
+  fs.truncateSync(copiedPath, 0);
+  tmuxText(socket, ["send-keys", "-t", codexPane, "Enter"]);
+  assert.equal(
+    await waitForFileText(copiedPath),
+    expectedSelection,
+    JSON.stringify({
+      enter: tmuxKeyLine(socket, "copy-mode", "Enter"),
+      messages: tmuxText(socket, ["show-messages"]),
+      state: paneCopyState(socket, codexPane),
+    }),
+  );
+  assert.deepEqual(paneCopyState(socket, codexPane), beforeExplicitCopy);
+
+  const [hudLeft, hudTop] = tmuxText(socket, [
     "display-message",
     "-p",
     "-t",
@@ -968,28 +1129,19 @@ test("a HUD click still routes while the top pane is in copy mode", async (conte
     .trim()
     .split("\t")
     .map(Number);
-
-  await clickTmuxPane({
-    column: paneLeft + copyButton.startColumn + 1,
-    row: paneTop + 1,
-    session: "route",
+  await sendTmuxMouseEvents({
+    events: [
+      { code: 0, column: hudLeft + 2, row: hudTop + 1, suffix: "M" },
+      { code: 0, column: hudLeft + 2, row: hudTop + 1, suffix: "m" },
+    ],
+    session: "persistent",
     socket,
   });
-  const control = await waitForControl(
-    runDirectory,
-    "interaction.mode.set",
-  );
-  assert.equal(control?.mode, "copy");
-  assert.equal(
-    readHudInteractionMode(
-      "$0",
-      tmuxEnvironment(socket, codexPane, env),
-    ),
-    "copy",
-  );
-  const afterClick = paneCopyState(socket, codexPane);
-  assert.equal(afterClick.inMode, "1");
-  assert.equal(afterClick.scrollPosition, historical.scrollPosition);
+  assert.match(await waitForFileText(clickCapture), /^__hud-click\t/u);
+  assert.deepEqual(paneCopyState(socket, codexPane), beforeExplicitCopy);
+
+  tmuxText(socket, ["send-keys", "-t", codexPane, "q"]);
+  assert.equal(paneCopyState(socket, codexPane).inMode, "0");
   assert.equal(removeRunDirectory(runDirectory, env), true);
 });
 
@@ -1010,9 +1162,29 @@ async function waitForExitRecord(runDirectory, env) {
 }
 
 /**
- * @param {{column: number, row: number, session: string, socket: string}} options
+ * Send real SGR mouse reports through an attached xterm client. This exercises
+ * tmux's root/copy-mode mouse dispatch instead of merely invoking the bound
+ * copy-mode commands directly.
+ *
+ * @param {{
+ *   events: Array<{code: number, column: number, row: number, suffix: "M" | "m"}>,
+ *   session: string,
+ *   socket: string
+ * }} options
  */
-async function clickTmuxPane({ column, row, session, socket }) {
+async function sendTmuxMouseEvents({ events, session, socket }) {
+  for (const event of events) {
+    if (
+      !Number.isInteger(event.code) ||
+      !Number.isInteger(event.column) ||
+      !Number.isInteger(event.row) ||
+      event.column < 1 ||
+      event.row < 1 ||
+      (event.suffix !== "M" && event.suffix !== "m")
+    ) {
+      throw new Error("invalid tmux mouse fixture event");
+    }
+  }
   const script = [
     "set timeout 5",
     'set env(TERM) "xterm-256color"',
@@ -1021,9 +1193,10 @@ async function clickTmuxPane({ column, row, session, socket }) {
     "expect -re {[$#] }",
     `send -- "exec tmux -L ${socket} attach-session -t ${session}\\r"`,
     "after 400",
-    `send -- "\\033\\[<0;${column};${row}M"`,
-    "after 100",
-    `send -- "\\033\\[<3;${column};${row}m"`,
+    ...events.flatMap((event) => [
+      `send -- "\\033\\[<${event.code};${event.column};${event.row}${event.suffix}"`,
+      "after 250",
+    ]),
     "after 400",
     'send -- "\\002d"',
     "expect eof",
@@ -1042,27 +1215,30 @@ async function clickTmuxPane({ column, row, session, socket }) {
         resolve(undefined);
         return;
       }
-      reject(new Error(`expect tmux click failed: ${stderr.trim()}`));
+      reject(new Error(`expect tmux mouse fixture failed: ${stderr.trim()}`));
     });
   });
 }
 
 /**
- * @param {string} runDirectory
- * @param {string} kind
+ * @param {string} filePath
  */
-async function waitForControl(runDirectory, kind) {
+async function waitForFileText(filePath) {
   const deadline = Date.now() + 5_000;
   while (Date.now() < deadline) {
-    const control = readControlFiles(runDirectory)
-      .map((item) => item.control)
-      .find((candidate) => candidate.kind === kind);
-    if (control) {
-      return control;
+    try {
+      const text = fs.readFileSync(filePath, "utf8");
+      if (text.length > 0) {
+        return text;
+      }
+    } catch {
+      // The fixture command is asynchronous from tmux's point of view.
     }
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
-  return null;
+  return fs.existsSync(filePath)
+    ? fs.readFileSync(filePath, "utf8")
+    : "";
 }
 
 /**
@@ -1203,6 +1379,18 @@ function tmuxKeyLine(socket, table, key) {
 
 /**
  * @param {string} socket
+ * @param {string} prefix
+ */
+function tmuxBufferName(socket, prefix) {
+  return (
+    tmuxText(socket, ["list-buffers", "-F", "#{buffer_name}"])
+      .split(/\r?\n/u)
+      .find((name) => name.startsWith(prefix)) ?? null
+  );
+}
+
+/**
+ * @param {string} socket
  * @param {string} pane
  * @param {NodeJS.ProcessEnv} env
  */
@@ -1212,7 +1400,7 @@ function tmuxEnvironment(socket, pane, env) {
     "-p",
     "-t",
     pane,
-    "#{socket_path},#{pid},#{pane_id}",
+    "#{socket_path},#{pid},0",
   ]).trim();
   return { ...env, TMUX: tmux, TMUX_PANE: pane };
 }
@@ -1231,5 +1419,9 @@ function paneCopyState(socket, pane) {
   ])
     .trim()
     .split("\t");
-  return { inMode, scrollPosition, selectionPresent };
+  return {
+    inMode,
+    scrollPosition,
+    selectionPresent: selectionPresent || "0",
+  };
 }

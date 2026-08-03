@@ -19,14 +19,11 @@ import {
   removeRunDirectory,
   writeRunJson,
 } from "./run-directory.mjs";
-import {
-  DEFAULT_INTERACTION_MODE,
-  isInteractionMode,
-  supportsSelectionControls,
-} from "./interaction-mode.mjs";
 
-const HUD_INTERACTION_MODE_OPTION = "@codex_hud_interaction_mode";
 const COPY_MODE_TABLES = Object.freeze(["copy-mode", "copy-mode-vi"]);
+const HUD_SELECTION_BUFFER_PREFIX = "codex-hud-selection";
+const MACOS_COPY_COMMAND = "/usr/bin/pbcopy";
+const TMUX_PANE_ID = /^%[0-9]+$/u;
 
 /**
  * @param {string[]} args
@@ -185,16 +182,12 @@ export async function runHud({
 
   const launchId = randomUUID();
   const ownsTmuxServer = !(env.TMUX && env.TMUX_PANE);
-  const selectionControls = supportsSelectionControls({
-    env,
-    ownsTmuxServer,
-  });
   const runDirectoryOptions = {
     cwd,
+    copyActionControls: ownsTmuxServer,
     env,
     launchId,
     ownsTmuxServer,
-    selectionControls,
   };
   const runDirectory = createRunDirectory(runDirectoryOptions);
   const launch = {
@@ -352,55 +345,6 @@ export function tmuxClientFeatureArgs(env = process.env) {
   return /jetbrains|jediterm|pycharm|intellij/u.test(identity)
     ? ["-T", "sync"]
     : [];
-}
-
-/**
- * Read the HUD interaction mode stored locally on a tmux session.
- * Missing or malformed values are deliberately treated as the safe HUD
- * default rather than being exposed to event handlers.
- *
- * @param {string} sessionId
- * @param {NodeJS.ProcessEnv} [env]
- * @returns {"hud" | "copy"}
- */
-export function readHudInteractionMode(sessionId, env = process.env) {
-  const value = tmuxOutput(
-    [
-      "show-options",
-      "-qv",
-      "-t",
-      sessionId,
-      HUD_INTERACTION_MODE_OPTION,
-    ],
-    env,
-  ).trim();
-  return isInteractionMode(value) ? value : DEFAULT_INTERACTION_MODE;
-}
-
-/**
- * Set the HUD interaction mode locally on a tmux session. Mouse support is
- * intentionally kept enabled in both modes because HUD controls remain
- * clickable in copy mode.
- *
- * @param {string} sessionId
- * @param {unknown} mode
- * @param {NodeJS.ProcessEnv} [env]
- * @returns {"hud" | "copy"}
- */
-export function setHudInteractionMode(
-  sessionId,
-  mode,
-  env = process.env,
-) {
-  if (!isInteractionMode(mode)) {
-    throw new Error(`Invalid HUD interaction mode: ${String(mode)}`);
-  }
-  tmuxChecked(["set-option", "-t", sessionId, "mouse", "on"], env);
-  tmuxChecked(
-    ["set-option", "-t", sessionId, HUD_INTERACTION_MODE_OPTION, mode],
-    env,
-  );
-  return mode;
 }
 
 /**
@@ -569,10 +513,6 @@ export async function runInsideTmux({
       ["select-pane", "-t", env.TMUX_PANE, "-T", "Codex"],
       env,
     );
-    if (ownsTmuxServer) {
-      setHudInteractionMode(sessionId, DEFAULT_INTERACTION_MODE, env);
-    }
-
     const rendererCommand = [
       quoteShellArgument(process.execPath),
       quoteShellArgument(launch.entryPath),
@@ -604,7 +544,6 @@ export async function runInsideTmux({
         entryPath: launch.entryPath,
         hudPane,
         runDirectory,
-        usesInteractionModes: ownsTmuxServer,
       }),
       env,
     );
@@ -661,7 +600,6 @@ export async function runInsideTmux({
  *   entryPath: string,
  *   hudPane: string,
  *   runDirectory: string,
- *   usesInteractionModes: boolean,
  *   nodePath?: string
  * }} options
  */
@@ -670,18 +608,14 @@ export function todoMouseBinding({
   entryPath,
   hudPane,
   runDirectory,
-  usesInteractionModes,
   nodePath = process.execPath,
 }) {
   const clickCommand = hudClickCommand({
+    codexPane,
     entryPath,
     nodePath,
     runDirectory,
   });
-  const defaultMouseDown = "select-pane -t = \\; send-keys -M";
-  const nonHudMouseDown = usesInteractionModes
-    ? `if-shell -F ${copyModeMouseCondition(codexPane)} "select-pane -t =" "${defaultMouseDown}"`
-    : defaultMouseDown;
   return [
     "bind-key",
     "-T",
@@ -691,17 +625,19 @@ export function todoMouseBinding({
     "-F",
     `#{==:#{mouse_pane},${hudPane}}`,
     hudClickHandler(clickCommand),
-    nonHudMouseDown,
+    "select-pane -t =",
   ];
 }
 
 /**
- * Build the mouse policy for a HUD-owned tmux server. The session user option
- * is evaluated by tmux at event time, so switching modes needs no key-table
- * rewrite and mouse support can remain enabled for HUD controls.
+ * Build the mouse policy for a HUD-owned tmux server. The root bindings force
+ * the Codex pane into tmux copy-mode before application mouse reporting can
+ * consume a drag. Copy-mode bindings keep selection and history stable until
+ * the user explicitly exits with q or copies with Enter.
  *
  * @param {{
  *   codexPane: string,
+ *   copyCommand?: string,
  *   entryPath: string,
  *   hudPane: string,
  *   runDirectory: string,
@@ -710,34 +646,47 @@ export function todoMouseBinding({
  */
 export function hudMouseBindings({
   codexPane,
+  copyCommand = MACOS_COPY_COMMAND,
   entryPath,
   hudPane,
   runDirectory,
   nodePath = process.execPath,
 }) {
-  const copyModeCondition = copyModeMouseCondition(codexPane);
   const clickHandler = hudClickHandler(
-    hudClickCommand({ entryPath, nodePath, runDirectory }),
+    hudClickCommand({
+      codexPane,
+      entryPath,
+      nodePath,
+      runDirectory,
+    }),
   );
   const bindings = [
     mouseEventBinding({
-      fallback: `if-shell -F ${copyModeCondition} "select-pane -t =" 'if-shell -F "#{||:#{pane_in_mode},#{mouse_any_flag}}" "send-keys -M" "copy-mode -M"'`,
+      fallback: isolatedCodexMouseCommand("copy-mode -M"),
       hudCommand: noOpMouseCommand(),
       hudPane,
       key: "MouseDrag1Pane",
       table: "root",
     }),
     rootWordSelectionBinding({
-      codexPane,
       hudPane,
       key: "DoubleClick1Pane",
       selection: "select-word",
     }),
     rootWordSelectionBinding({
-      codexPane,
       hudPane,
       key: "TripleClick1Pane",
       selection: "select-line",
+    }),
+    rootWheelBinding({
+      hudPane,
+      key: "WheelUpPane",
+      scroll: "scroll-up",
+    }),
+    rootWheelBinding({
+      hudPane,
+      key: "WheelDownPane",
+      scroll: "scroll-down",
     }),
   ];
 
@@ -745,62 +694,122 @@ export function hudMouseBindings({
     bindings.push(
       copyModeMouseBinding({
         table,
-        codexPane,
         clickHandler,
         hudPane,
         key: "MouseDown1Pane",
-        hudCommand: "select-pane -t = \\; send-keys -X clear-selection",
+        codexCommand: "send-keys -X clear-selection",
       }),
       copyModeMouseBinding({
         table,
-        codexPane,
         clickHandler,
         hudPane,
         key: "MouseDrag1Pane",
-        hudCommand: "select-pane -t = \\; send-keys -X begin-selection",
+        codexCommand: "send-keys -X begin-selection",
       }),
       copyModeMouseBinding({
         table,
-        codexPane,
         clickHandler,
         hudPane,
         key: "MouseDragEnd1Pane",
-        hudCommand: "send-keys -X stop-selection",
+        codexCommand: "send-keys -X stop-selection",
       }),
       copyModeMouseBinding({
         table,
-        codexPane,
         clickHandler,
         hudPane,
         key: "DoubleClick1Pane",
-        hudCommand:
-          "select-pane -t = \\; send-keys -X select-word \\; send-keys -X stop-selection",
+        codexCommand:
+          "send-keys -X select-word ; send-keys -X stop-selection",
       }),
       copyModeMouseBinding({
         table,
-        codexPane,
         clickHandler,
         hudPane,
         key: "TripleClick1Pane",
-        hudCommand:
-          "select-pane -t = \\; send-keys -X select-line \\; send-keys -X stop-selection",
+        codexCommand:
+          "send-keys -X select-line ; send-keys -X stop-selection",
       }),
+      copyModeMouseBinding({
+        table,
+        clickHandler,
+        hudPane,
+        key: "WheelUpPane",
+        codexCommand: "send-keys -X -N 5 scroll-up",
+      }),
+      copyModeMouseBinding({
+        table,
+        clickHandler,
+        hudPane,
+        key: "WheelDownPane",
+        codexCommand: "send-keys -X -N 5 scroll-down",
+      }),
+      ["bind-key", "-T", table, "q", "send-keys", "-X", "cancel"],
+      copyModeEnterBinding(table, copyCommand),
     );
   }
   return bindings;
 }
 
 /**
+ * Guard the keyboard copy path as well as the UI action: tmux otherwise lets
+ * `copy-pipe-no-clear` run with an empty selection after merely entering
+ * history, which would overwrite the system clipboard with empty text.
+ *
+ * @param {string} table
+ * @param {string} copyCommand
+ */
+function copyModeEnterBinding(table, copyCommand) {
+  const copyAction = [
+    "send-keys",
+    "-X",
+    "copy-pipe-no-clear",
+    "-CP",
+    quoteNestedTmuxShellArgument(copyCommand),
+  ].join(" ");
+  return [
+    "bind-key",
+    "-T",
+    table,
+    "Enter",
+    "if-shell",
+    "-F",
+    "#{==:#{selection_present},1}",
+    copyAction,
+    noOpMouseCommand(),
+  ];
+}
+
+/**
  * @param {{
- *   codexPane: string,
  *   hudPane: string,
  *   key: string,
  *   selection: "select-line" | "select-word"
  * }} options
  */
-function rootWordSelectionBinding({ codexPane, hudPane, key, selection }) {
+function rootWordSelectionBinding({ hudPane, key, selection }) {
   return mouseEventBinding({
-    fallback: `if-shell -F ${copyModeMouseCondition(codexPane)} "select-pane -t =" "select-pane -t = \\; if-shell -F '#{||:#{pane_in_mode},#{mouse_any_flag}}' 'send-keys -M' 'copy-mode -H \\; send-keys -X ${selection} \\; send-keys -X stop-selection'"`,
+    fallback: isolatedCodexMouseCommand(
+      `copy-mode -H ; send-keys -X ${selection} ; send-keys -X stop-selection`,
+    ),
+    hudCommand: noOpMouseCommand(),
+    hudPane,
+    key,
+    table: "root",
+  });
+}
+
+/**
+ * @param {{
+ *   hudPane: string,
+ *   key: string,
+ *   scroll: "scroll-down" | "scroll-up"
+ * }} options
+ */
+function rootWheelBinding({ hudPane, key, scroll }) {
+  return mouseEventBinding({
+    fallback: isolatedCodexMouseCommand(
+      `copy-mode -e ; send-keys -X -N 5 ${scroll}`,
+    ),
     hudCommand: noOpMouseCommand(),
     hudPane,
     key,
@@ -811,23 +820,21 @@ function rootWordSelectionBinding({ codexPane, hudPane, key, selection }) {
 /**
  * @param {{
  *   table: string,
- *   codexPane: string,
  *   clickHandler: string,
  *   hudPane: string,
  *   key: string,
- *   hudCommand: string
+ *   codexCommand: string
  * }} options
  */
 function copyModeMouseBinding({
   table,
-  codexPane,
   clickHandler,
   hudPane,
   key,
-  hudCommand,
+  codexCommand,
 }) {
   return mouseEventBinding({
-    fallback: `if-shell -F ${copyModeMouseCondition(codexPane)} "select-pane -t =" "${hudCommand}"`,
+    fallback: isolatedCodexMouseCommand(codexCommand),
     hudCommand:
       key === "MouseDown1Pane" ? clickHandler : noOpMouseCommand(),
     hudPane,
@@ -860,15 +867,102 @@ function mouseEventBinding({ fallback, hudCommand, hudPane, key, table }) {
 }
 
 /**
- * @param {{entryPath: string, nodePath: string, runDirectory: string}} options
+ * Copy the active tmux selection without exiting copy-mode or clearing its
+ * visible highlight. The target pane must resolve inside the exact tmux server
+ * described by the caller's TMUX environment; this prevents a HUD click from
+ * addressing an arbitrary server or pane.
+ *
+ * `copyCommand` is intentionally private to callers of this module: runtime
+ * calls use the fixed macOS pbcopy binary, while focused PTY tests inject a
+ * fixture command so they never touch the user's real clipboard.
+ *
+ * @param {string} codexPane
+ * @param {NodeJS.ProcessEnv} [env]
+ * @param {{copyCommand?: string}} [options]
+ * @returns {boolean}
  */
-function hudClickCommand({ entryPath, nodePath, runDirectory }) {
+export function copyHudSelection(
+  codexPane,
+  env = process.env,
+  { copyCommand = MACOS_COPY_COMMAND } = {},
+) {
+  if (!TMUX_PANE_ID.test(codexPane) || typeof copyCommand !== "string" || copyCommand === "") {
+    return false;
+  }
+
+  let selectionBuffer = null;
+  let bufferCreated = false;
+  try {
+    if (!isCurrentTmuxPane(codexPane, env)) {
+      return false;
+    }
+    const [inMode, paneMode, selectionPresent] = tmuxOutput(
+      [
+        "display-message",
+        "-p",
+        "-t",
+        codexPane,
+        "#{pane_in_mode}\t#{pane_mode}\t#{selection_present}",
+      ],
+      env,
+    )
+      .trim()
+      .split("\t");
+    if (
+      inMode !== "1" ||
+      paneMode !== "copy-mode" ||
+      selectionPresent !== "1"
+    ) {
+      return false;
+    }
+
+    const selectionBufferPrefix = `${HUD_SELECTION_BUFFER_PREFIX}-${randomUUID()}`;
+    tmuxChecked(
+      [
+        "send-keys",
+        "-t",
+        codexPane,
+        "-X",
+        "copy-selection-no-clear",
+        "-C",
+        selectionBufferPrefix,
+      ],
+      env,
+    );
+    selectionBuffer = tmuxSelectionBufferName(selectionBufferPrefix, env);
+    if (!selectionBuffer) {
+      throw new Error("tmux did not create the HUD selection buffer.");
+    }
+    bufferCreated = true;
+    const selection = tmuxOutput(
+      ["show-buffer", "-b", selectionBuffer],
+      env,
+    );
+    const copied = spawnSync(copyCommand, [], {
+      encoding: "utf8",
+      env,
+      input: selection,
+    });
+    return copied.status === 0 && !copied.error;
+  } catch {
+    return false;
+  } finally {
+    if (bufferCreated && selectionBuffer) {
+      deleteHudSelectionBuffer(selectionBuffer, env);
+    }
+  }
+}
+
+/**
+ * @param {{entryPath: string, nodePath: string, runDirectory: string, codexPane: string}} options
+ */
+function hudClickCommand({ codexPane, entryPath, nodePath, runDirectory }) {
   return [
     quoteTmuxShellArgument(nodePath),
     quoteTmuxShellArgument(entryPath),
     "__hud-click",
     quoteTmuxShellArgument(runDirectory),
-    quoteShellArgument("#{session_id}"),
+    quoteShellArgument(codexPane),
     quoteShellArgument("#{mouse_x}"),
     quoteShellArgument("#{mouse_y}"),
     quoteShellArgument("#{pane_width}"),
@@ -884,6 +978,18 @@ function hudClickCommand({ entryPath, nodePath, runDirectory }) {
  */
 function quoteTmuxShellArgument(value) {
   return quoteShellArgument(escapeTmuxFormat(value));
+}
+
+/**
+ * Enter reaches the pipe command through an if-shell action. The key binding
+ * parser consumes one shell layer before copy-pipe invokes its command, so the
+ * command needs two shell-quoting layers. A single literal-hash escape keeps
+ * static command paths from being treated as tmux formats.
+ *
+ * @param {string} value
+ */
+function quoteNestedTmuxShellArgument(value) {
+  return quoteShellArgument(quoteShellArgument(escapeTmuxFormat(value)));
 }
 
 /** @param {string} value */
@@ -910,10 +1016,80 @@ function hudMouseCondition(hudPane) {
 }
 
 /**
- * @param {string} codexPane
+ * hudMouseBindings are installed only on a HUD-owned isolated server, which
+ * contains exactly the Codex and HUD panes. Once the HUD branch is ruled out,
+ * addressing the current pane directly avoids evaluating a second mouse
+ * format after tmux has dispatched the event.
+ *
+ * @param {string} command
  */
-function copyModeMouseCondition(codexPane) {
-  return `#{&&:#{==:#{mouse_pane},${codexPane}},#{==:#{${HUD_INTERACTION_MODE_OPTION}},copy}}`;
+function isolatedCodexMouseCommand(command) {
+  return `select-pane -t = ; ${command}`;
+}
+
+/**
+ * @param {string} codexPane
+ * @param {NodeJS.ProcessEnv} env
+ */
+function isCurrentTmuxPane(codexPane, env) {
+  const currentServer = tmuxServerIdentity(env.TMUX);
+  if (!currentServer) {
+    return false;
+  }
+  const paneServer = tmuxOutput(
+    ["display-message", "-p", "-t", codexPane, "#{socket_path},#{pid}"],
+    env,
+  ).trim();
+  return paneServer === currentServer;
+}
+
+/** @param {string | undefined} value */
+function tmuxServerIdentity(value) {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const finalComma = value.lastIndexOf(",");
+  const penultimateComma = value.lastIndexOf(",", finalComma - 1);
+  if (finalComma < 1 || penultimateComma < 1) {
+    return null;
+  }
+  const pid = value.slice(penultimateComma + 1, finalComma);
+  const client = value.slice(finalComma + 1);
+  if (!/^\d+$/u.test(pid) || client === "") {
+    return null;
+  }
+  return value.slice(0, finalComma);
+}
+
+/**
+ * @param {string} bufferName
+ * @param {NodeJS.ProcessEnv} env
+ */
+function deleteHudSelectionBuffer(bufferName, env) {
+  spawnSync(
+    "tmux",
+    ["delete-buffer", "-b", bufferName],
+    {
+      env,
+      stdio: "ignore",
+    },
+  );
+}
+
+/**
+ * tmux treats the copy command's buffer argument as a prefix and appends a
+ * numeric suffix. Each HUD action gets a UUID prefix, so this lookup cannot
+ * select a buffer owned by a different action or by the user.
+ *
+ * @param {string} prefix
+ * @param {NodeJS.ProcessEnv} env
+ */
+function tmuxSelectionBufferName(prefix, env) {
+  return (
+    tmuxOutput(["list-buffers", "-F", "#{buffer_name}"], env)
+      .split(/\r?\n/u)
+      .find((bufferName) => bufferName.startsWith(prefix)) ?? null
+  );
 }
 
 /**
