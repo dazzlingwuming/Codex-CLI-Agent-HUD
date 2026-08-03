@@ -11,8 +11,10 @@ import {
   STATE_ROOT_ENV,
 } from "../src/constants.mjs";
 import { quoteShellArgument } from "../src/hooks-config.mjs";
+import { modeButtonLayout } from "../src/interaction-mode.mjs";
 import {
   createRunDirectory,
+  readControlFiles,
   readRunJson,
   removeRunDirectory,
   writeControlAtomic,
@@ -29,6 +31,7 @@ import {
   isolatedTmuxSocketPath,
   readHudInteractionMode,
   setHudInteractionMode,
+  runInsideTmux,
   tmuxClientFeatureArgs,
   todoMouseBinding,
   withHudTuiDefaults,
@@ -219,6 +222,45 @@ test("isolated tmux socket path follows TMUX_TMPDIR and the current uid", () => 
   );
 });
 
+test("tmux host requires an explicit boolean ownership manifest", async (context) => {
+  const base = fs.mkdtempSync(
+    path.join(os.tmpdir(), "codex-hud-tmux-ownership-"),
+  );
+  context.after(() => fs.rmSync(base, { recursive: true }));
+  const env = {
+    ...process.env,
+    [STATE_ROOT_ENV]: path.join(base, "state"),
+    TMUX_PANE: "%1",
+  };
+
+  for (const [index, ownsTmuxServer] of [undefined, "true"].entries()) {
+    const runDirectory = createRunDirectory({
+      cwd: base,
+      env,
+      launchId: `ownership-${index}`,
+      startedAtMs: Date.now(),
+    });
+    writeRunJson(
+      runDirectory,
+      "launch.json",
+      {
+        codexArgs: [],
+        codexBin: "codex",
+        cwd: base,
+        entryPath: "/tmp/cli.mjs",
+        ...(ownsTmuxServer === undefined ? {} : { ownsTmuxServer }),
+      },
+      env,
+    );
+
+    await assert.rejects(
+      runInsideTmux({ env, runDirectory }),
+      /launch manifest is invalid/u,
+    );
+    assert.equal(removeRunDirectory(runDirectory, env), true);
+  }
+});
+
 test("detached tmux host preserves Codex exit code and arguments", async (context) => {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), "codex-hud-tmux-test-"));
   const root = path.join(base, "state");
@@ -254,6 +296,7 @@ test("detached tmux host preserves Codex exit code and arguments", async (contex
       codexBin: fakeCodex,
       cwd: base,
       entryPath,
+      ownsTmuxServer: true,
     },
     env,
   );
@@ -280,7 +323,7 @@ test("detached tmux host preserves Codex exit code and arguments", async (contex
       "-y",
       "30",
       "-c",
-      base,
+      base.replaceAll("#", "##"),
       command,
     ],
     { env, encoding: "utf8" },
@@ -304,7 +347,7 @@ test("detached tmux host preserves Codex exit code and arguments", async (contex
 
 test("live tmux host enables scrollback and expands Todo controls", async (context) => {
   const base = fs.mkdtempSync(
-    path.join(os.tmpdir(), "codex-hud-tmux-interaction-"),
+    path.join(os.tmpdir(), "codex-hud-#{pane_id}-interaction-"),
   );
   const root = path.join(base, "state");
   const socket = `codex-hud-interaction-${process.pid}-${Date.now()}`;
@@ -341,6 +384,8 @@ test("live tmux host enables scrollback and expands Todo controls", async (conte
     cwd: base,
     env,
     launchId: "interaction",
+    ownsTmuxServer: true,
+    selectionControls: true,
     startedAtMs: Date.now(),
   });
   env[RUN_DIRECTORY_ENV] = runDirectory;
@@ -405,7 +450,7 @@ test("live tmux host enables scrollback and expands Todo controls", async (conte
       "-y",
       "30",
       "-c",
-      base,
+      base.replaceAll("#", "##"),
       command,
     ],
     { env, encoding: "utf8" },
@@ -415,9 +460,16 @@ test("live tmux host enables scrollback and expands Todo controls", async (conte
   const panes = await waitForPanes(socket, 2);
   const codexPane = panes.find((pane) => pane.title === "Codex");
   const hudPane = panes.find((pane) => pane.title === "Codex HUD");
-  assert.ok(codexPane);
+  assert.ok(
+    codexPane,
+    `missing Codex pane; exit=${JSON.stringify(readRunJson(runDirectory, "exit.json", env))}`,
+  );
   assert.ok(hudPane);
   assert.equal(await waitForPaneHeight(socket, hudPane.id, 6), true);
+  assert.match(
+    await waitForPaneContent(socket, hudPane.id, /复制模式.*HUD 模式/u),
+    /○ 复制模式.*● HUD 模式/u,
+  );
 
   assert.equal(
     tmuxText(socket, ["show-options", "-v", "-t", "hud", "mouse"]).trim(),
@@ -804,7 +856,10 @@ test("nested tmux restores local and inherited interaction state", async (contex
 
 test("a HUD click still routes while the top pane is in copy mode", async (context) => {
   const base = fs.mkdtempSync(
-    path.join(os.tmpdir(), "codex-hud-tmux-mouse-route-"),
+    path.join(
+      os.tmpdir(),
+      "codex-hud-#{pane_id}-#(printf x)-mouse-route-",
+    ),
   );
   const root = path.join(base, "state");
   const socket = `codex-hud-mouse-route-${process.pid}-${Date.now()}`;
@@ -822,21 +877,11 @@ test("a HUD click still routes while the top pane is in copy mode", async (conte
     cwd: base,
     env,
     launchId: "mouse-route",
+    ownsTmuxServer: true,
+    selectionControls: true,
     startedAtMs: Date.now(),
   });
-  const recorderPath = path.join(base, "hud-click-recorder.mjs");
-  fs.writeFileSync(
-    recorderPath,
-    [
-      'import fs from "node:fs";',
-      'import path from "node:path";',
-      "const [command, runDirectory, sessionId, mouseX, mouseY, paneWidth] = process.argv.slice(2);",
-      'if (command === "__hud-click") {',
-      "  fs.writeFileSync(path.join(runDirectory, \"controls\", \"hud-click.json\"), JSON.stringify({ sessionId, mouseX, mouseY, paneWidth }));",
-      "}",
-      "",
-    ].join("\n"),
-  );
+  const entryPath = fileURLToPath(new URL("../src/cli.mjs", import.meta.url));
 
   const started = spawnSync(
     "tmux",
@@ -887,11 +932,11 @@ test("a HUD click still routes while the top pane is in copy mode", async (conte
     "-t",
     "route",
     "@codex_hud_interaction_mode",
-    "copy",
+    "hud",
   ]);
   const bindingOptions = {
     codexPane,
-    entryPath: recorderPath,
+    entryPath,
     hudPane,
     nodePath: process.execPath,
     runDirectory,
@@ -909,6 +954,10 @@ test("a HUD click still routes while the top pane is in copy mode", async (conte
   tmuxText(socket, ["send-keys", "-t", codexPane, "-X", "history-top"]);
   const historical = paneCopyState(socket, codexPane);
   assert.equal(historical.inMode, "1");
+  const layout = modeButtonLayout(100, "hud");
+  assert.ok(layout);
+  const copyButton = layout.buttons.find((button) => button.mode === "copy");
+  assert.ok(copyButton);
   const [paneLeft, paneTop] = tmuxText(socket, [
     "display-message",
     "-p",
@@ -921,18 +970,23 @@ test("a HUD click still routes while the top pane is in copy mode", async (conte
     .map(Number);
 
   await clickTmuxPane({
-    column: paneLeft + 1,
+    column: paneLeft + copyButton.startColumn + 1,
     row: paneTop + 1,
     session: "route",
     socket,
   });
-  const clickPath = path.join(runDirectory, "controls", "hud-click.json");
-  assert.equal(await waitForFile(clickPath), true);
-  const click = JSON.parse(fs.readFileSync(clickPath, "utf8"));
-  assert.equal(click.sessionId, "$0");
-  assert.equal(click.mouseX, "0");
-  assert.equal(click.mouseY, "0");
-  assert.equal(click.paneWidth, "100");
+  const control = await waitForControl(
+    runDirectory,
+    "interaction.mode.set",
+  );
+  assert.equal(control?.mode, "copy");
+  assert.equal(
+    readHudInteractionMode(
+      "$0",
+      tmuxEnvironment(socket, codexPane, env),
+    ),
+    "copy",
+  );
   const afterClick = paneCopyState(socket, codexPane);
   assert.equal(afterClick.inMode, "1");
   assert.equal(afterClick.scrollPosition, historical.scrollPosition);
@@ -994,17 +1048,21 @@ async function clickTmuxPane({ column, row, session, socket }) {
 }
 
 /**
- * @param {string} filePath
+ * @param {string} runDirectory
+ * @param {string} kind
  */
-async function waitForFile(filePath) {
+async function waitForControl(runDirectory, kind) {
   const deadline = Date.now() + 5_000;
   while (Date.now() < deadline) {
-    if (fs.existsSync(filePath)) {
-      return true;
+    const control = readControlFiles(runDirectory)
+      .map((item) => item.control)
+      .find((candidate) => candidate.kind === kind);
+    if (control) {
+      return control;
     }
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
-  return false;
+  return null;
 }
 
 /**

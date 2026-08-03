@@ -66,6 +66,20 @@ test("the public delimiter is removed before forwarding Codex arguments", () => 
   ]);
 });
 
+test("the hidden HUD click command rejects incomplete coordinates", async () => {
+  const { io, output } = memoryIo();
+  assert.equal(await runCli(["__hud-click"], io), 2);
+  assert.equal(
+    await runCli(
+      ["__hud-click", "/tmp/run", "$1", "10", "20"],
+      io,
+    ),
+    2,
+  );
+  assert.equal(output.stdout, "");
+  assert.equal(output.stderr, "");
+});
+
 test("CLI executes when launched through an npm-style symlink", (context) => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "codex-hud-bin-"));
   context.after(() => fs.rmSync(directory, { recursive: true }));

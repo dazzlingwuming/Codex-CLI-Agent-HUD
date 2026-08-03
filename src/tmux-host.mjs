@@ -308,7 +308,7 @@ function launchIsolatedTmux({
           "-s",
           "hud",
           "-c",
-          launchCwd,
+          escapeTmuxFormat(launchCwd),
           command,
         ],
         {
@@ -517,7 +517,8 @@ export async function runInsideTmux({
     !Array.isArray(launch.codexArgs) ||
     typeof launch.codexBin !== "string" ||
     typeof launch.cwd !== "string" ||
-    typeof launch.entryPath !== "string"
+    typeof launch.entryPath !== "string" ||
+    typeof launch.ownsTmuxServer !== "boolean"
   ) {
     throw new Error("Codex HUD launch manifest is invalid.");
   }
@@ -538,7 +539,7 @@ export async function runInsideTmux({
     ["display-message", "-p", "-t", env.TMUX_PANE, "#{session_id}"],
     env,
   ).trim();
-  const ownsTmuxServer = launch.ownsTmuxServer !== false;
+  const ownsTmuxServer = launch.ownsTmuxServer;
   const interactionSnapshot =
     !ownsTmuxServer
       ? snapshotTmuxInteraction(sessionId, env.TMUX_PANE, env)
@@ -591,7 +592,7 @@ export async function runInsideTmux({
         "-t",
         env.TMUX_PANE,
         "-c",
-        launch.cwd,
+        escapeTmuxFormat(launch.cwd),
         rendererCommand,
       ],
       env,
@@ -863,15 +864,31 @@ function mouseEventBinding({ fallback, hudCommand, hudPane, key, table }) {
  */
 function hudClickCommand({ entryPath, nodePath, runDirectory }) {
   return [
-    quoteShellArgument(nodePath),
-    quoteShellArgument(entryPath),
+    quoteTmuxShellArgument(nodePath),
+    quoteTmuxShellArgument(entryPath),
     "__hud-click",
-    quoteShellArgument(runDirectory),
+    quoteTmuxShellArgument(runDirectory),
     quoteShellArgument("#{session_id}"),
     quoteShellArgument("#{mouse_x}"),
     quoteShellArgument("#{mouse_y}"),
     quoteShellArgument("#{pane_width}"),
   ].join(" ");
+}
+
+/**
+ * tmux expands formats before invoking run-shell and does not honor shell
+ * quoting while doing so. Doubling a literal hash protects static paths while
+ * the separately supplied mouse formats remain intentionally expandable.
+ *
+ * @param {string} value
+ */
+function quoteTmuxShellArgument(value) {
+  return quoteShellArgument(escapeTmuxFormat(value));
+}
+
+/** @param {string} value */
+function escapeTmuxFormat(value) {
+  return value.replaceAll("#", "##");
 }
 
 /**

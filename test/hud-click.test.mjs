@@ -23,7 +23,7 @@ test("PyCharm mode buttons set an explicit mode and persist one control", (conte
 
   const exitCode = handleHudClick({
     ...fixture.click,
-    mouseX: 5 + copy.startColumn,
+    mouseX: copy.startColumn,
     now: 2_000,
     readMode: () => currentMode,
     setMode: (_sessionId, mode) => {
@@ -56,7 +56,7 @@ test("clicking the active mode is idempotent", (context) => {
 
   const exitCode = handleHudClick({
     ...fixture.click,
-    mouseX: 5 + hud.startColumn,
+    mouseX: hud.startColumn,
     readMode: () => "hud",
     setMode: () => {
       setCalls += 1;
@@ -72,8 +72,8 @@ test("non-button HUD clicks retain Todo toggle behavior", (context) => {
   const fixture = hudFixture(context, true);
   const exitCode = handleHudClick({
     ...fixture.click,
-    mouseX: 5,
-    mouseY: 11,
+    mouseX: 0,
+    mouseY: 1,
     now: 3_000,
     readMode: () => "hud",
     setMode: () => {},
@@ -96,7 +96,36 @@ test("terminals without selection controls cannot activate copy mode", (context)
 
   const exitCode = handleHudClick({
     ...fixture.click,
-    mouseX: 5 + copy.startColumn,
+    mouseX: copy.startColumn,
+    readMode: () => "hud",
+    setMode: () => {
+      setCalls += 1;
+    },
+  });
+
+  assert.equal(exitCode, 0);
+  assert.equal(setCalls, 0);
+  assert.equal(
+    readControlFiles(fixture.runDirectory)[0].control.kind,
+    "todo.toggle",
+  );
+});
+
+test("selection controls are rejected outside a HUD-owned tmux server", (context) => {
+  const fixture = hudFixture(context, true);
+  const layout = modeButtonLayout(80, "hud");
+  assert.ok(layout);
+  const copy = layout.buttons.find((button) => button.mode === "copy");
+  assert.ok(copy);
+  let setCalls = 0;
+
+  const exitCode = handleHudClick({
+    ...fixture.click,
+    mouseX: copy.startColumn,
+    readMeta: () => ({
+      ownsTmuxServer: false,
+      selectionControls: true,
+    }),
     readMode: () => "hud",
     setMode: () => {
       setCalls += 1;
@@ -122,7 +151,7 @@ test("a failed control write rolls tmux back to the previous mode", (context) =>
 
   const exitCode = handleHudClick({
     ...fixture.click,
-    mouseX: 5 + copy.startColumn,
+    mouseX: copy.startColumn,
     readMode: () => "hud",
     setMode: (_sessionId, mode) => modes.push(mode),
     writeControl: () => false,
@@ -181,10 +210,8 @@ function hudFixture(context, selectionControls) {
   return {
     click: {
       env,
-      mouseX: 5,
-      mouseY: 10,
-      paneLeft: 5,
-      paneTop: 10,
+      mouseX: 0,
+      mouseY: 0,
       paneWidth: 80,
       runDirectory,
       sessionId: "$1",

@@ -164,7 +164,7 @@ HUD 会话还默认传入 Codex 官方的 `--no-alt-screen`，让输出保留在
 - 在 HUD 自己创建的隔离 tmux 上方 Codex pane 使用滚轮会进入 copy-mode，并回看当前 HUD 会话的终端输出。
 - 在该隔离会话进入历史后，拖选、松开（`MouseDragEnd`）或再次单击都不会自动复制、退出 copy-mode 或跳回最新输出；按 `q` 才返回 Codex 输入。
 - Apple Terminal 和 VS Code 内置 Terminal 直接启动 `codex` 时，同样会获得这套 HUD 安全历史绑定，但不显示 PyCharm 双模式按钮。
-- 在用户已有 tmux server 中启动时，HUD 会保留用户的 `copy-mode` 和 `copy-mode-vi` key tables；拖选、松开、单击及退出历史的行为取决于用户自己的 tmux 配置。
+- 在用户已有 tmux server 中启动时，HUD 会保留用户的 `copy-mode` 和 `copy-mode-vi` key tables；拖选、松开、单击及退出历史的行为取决于用户自己的 tmux 配置。若用户 key table 在 copy-mode 中拦截了 HUD 点击，请先按 `q` 退出历史模式再点击 Todo。
 - 若需要让外层终端直接处理选区或滚动，可使用该终端配置的 tmux bypass 修饰键；常见是按住 `Shift`，具体以终端设置为准。
 
 这里的 scrollback 是本次 HUD/tmux 会话产生的输出，不包含启动 `codex` 之前外层 shell 已有的历史。

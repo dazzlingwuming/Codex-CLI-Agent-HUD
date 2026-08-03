@@ -11,17 +11,14 @@ import {
 
 /**
  * Route one tmux HUD click to either an explicit interaction mode or the
- * existing Todo control. Mouse coordinates are absolute window coordinates;
- * the pane origin converts them to the zero-based coordinates used by the
- * shared renderer geometry.
+ * existing Todo control. tmux's mouse_x and mouse_y formats are already
+ * zero-based coordinates relative to the mouse pane.
  *
  * @param {{
  *   runDirectory: string,
  *   sessionId: string,
  *   mouseX: string | number,
  *   mouseY: string | number,
- *   paneLeft: string | number,
- *   paneTop: string | number,
  *   paneWidth: string | number,
  *   env?: NodeJS.ProcessEnv,
  *   now?: number,
@@ -37,8 +34,6 @@ export function handleHudClick({
   sessionId,
   mouseX,
   mouseY,
-  paneLeft,
-  paneTop,
   paneWidth,
   env = process.env,
   now = Date.now(),
@@ -52,22 +47,21 @@ export function handleHudClick({
     return 2;
   }
 
-  const coordinates = [mouseX, mouseY, paneLeft, paneTop, paneWidth].map(
-    integerValue,
-  );
+  const coordinates = [mouseX, mouseY, paneWidth].map(integerValue);
   if (coordinates.some((value) => value === null)) {
     return 2;
   }
-  const [absoluteX, absoluteY, left, top, width] =
+  const [column, row, width] =
     /** @type {number[]} */ (coordinates);
-  const column = absoluteX - left;
-  const row = absoluteY - top;
   if (width <= 0 || column < 0 || column >= width || row < 0) {
     return 2;
   }
 
   const meta = readMeta(runDirectory);
-  if (meta?.selectionControls === true) {
+  if (
+    meta?.selectionControls === true &&
+    meta?.ownsTmuxServer === true
+  ) {
     const observedMode = readMode(sessionId, env);
     const currentMode = isInteractionMode(observedMode)
       ? observedMode

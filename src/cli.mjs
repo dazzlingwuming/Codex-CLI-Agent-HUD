@@ -8,6 +8,7 @@ import {
   doctorExitCode,
   formatDoctorText,
 } from "./doctor.mjs";
+import { handleHudClick } from "./hud-click.mjs";
 import {
   runOriginalCodex,
   shouldUseHudForCodex,
@@ -21,6 +22,8 @@ import {
 import { runRenderer } from "./renderer.mjs";
 import {
   cleanupStaleRuns,
+  readRunMeta,
+  validateRunDirectory,
   writeControlAtomic,
   writeRunJson,
 } from "./run-directory.mjs";
@@ -29,8 +32,10 @@ import {
   uninstallShellIntegration,
 } from "./shell-integration.mjs";
 import {
+  readHudInteractionMode,
   runHud,
   runInsideTmux,
+  setHudInteractionMode,
 } from "./tmux-host.mjs";
 
 export const VERSION = "0.1.0";
@@ -89,6 +94,44 @@ export async function runCli(
       : 2;
   }
 
+  if (command === "__hud-click") {
+    const [
+      runDirectory,
+      sessionId,
+      mouseX,
+      mouseY,
+      paneWidth,
+    ] = argv.slice(1);
+    if (
+      [
+        runDirectory,
+        sessionId,
+        mouseX,
+        mouseY,
+        paneWidth,
+      ].some((value) => value === undefined)
+    ) {
+      return 2;
+    }
+    try {
+      return handleHudClick({
+        env: process.env,
+        mouseX,
+        mouseY,
+        paneWidth,
+        readMode: readHudInteractionMode,
+        runDirectory,
+        sessionId,
+        setMode: setHudInteractionMode,
+      });
+    } catch (error) {
+      io.stderr.write(
+        `codex-hud interaction degraded: ${errorMessage(error)}\n`,
+      );
+      return 2;
+    }
+  }
+
   if (command === "__codex") {
     const codexArgs = forwardedArguments(argv.slice(1));
     if (!shouldUseHudForCodex(codexArgs)) {
@@ -103,7 +146,16 @@ export async function runCli(
       return 2;
     }
     try {
-      return await runRenderer({ runDirectory });
+      if (!validateRunDirectory(runDirectory)) {
+        return 2;
+      }
+      const meta = readRunMeta(runDirectory);
+      return await runRenderer({
+        runDirectory,
+        selectionControls:
+          meta?.selectionControls === true &&
+          meta?.ownsTmuxServer === true,
+      });
     } catch (error) {
       io.stderr.write(`codex-hud renderer degraded: ${errorMessage(error)}\n`);
       return 2;
