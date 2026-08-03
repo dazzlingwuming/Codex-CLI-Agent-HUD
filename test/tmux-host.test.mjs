@@ -482,7 +482,13 @@ test("live tmux host enables scrollback and expands Todo controls", async (conte
   );
   assert.ok(hudPane);
   assert.equal(await waitForPaneHeight(socket, hudPane.id, 6), true);
-  assert.match(await waitForPaneContent(socket, hudPane.id, /Codex HUD/u), /Codex HUD/u);
+  const hudContent = await waitForPaneContent(
+    socket,
+    hudPane.id,
+    /\[复制所选\]/u,
+  );
+  assert.match(hudContent, /Codex HUD/u);
+  assert.equal(hudContent.match(/\[复制所选\]/gu)?.length, 1);
 
   assert.equal(
     tmuxText(socket, ["show-options", "-v", "-t", "hud", "mouse"]).trim(),
@@ -506,6 +512,15 @@ test("live tmux host enables scrollback and expands Todo controls", async (conte
   assert.match(rootBindings, /__hud-click/u);
   assert.doesNotMatch(rootBindings, /@codex_hud_interaction_mode/u);
   for (const table of ["copy-mode", "copy-mode-vi"]) {
+    assert.equal(
+      await waitForKeyBinding(
+        socket,
+        table,
+        "Enter",
+        /selection_present.*copy-pipe-no-clear/u,
+      ),
+      true,
+    );
     const tableBindings = tmuxText(socket, ["list-keys", "-T", table]);
     assert.match(tableBindings, /MouseDown1Pane.*clear-selection/u);
     assert.match(tableBindings, /MouseDragEnd1Pane.*stop-selection/u);
@@ -1350,6 +1365,28 @@ async function waitForPaneContent(socket, pane, pattern) {
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   return content;
+}
+
+/**
+ * The HUD pane renderer and tmux key installation start back-to-back. Wait for
+ * the final key in each table so this integration test observes the completed
+ * host setup rather than a partially installed binding set.
+ *
+ * @param {string} socket
+ * @param {string} table
+ * @param {string} key
+ * @param {RegExp} pattern
+ */
+async function waitForKeyBinding(socket, table, key, pattern) {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    const binding = tmuxKeyLine(socket, table, key) ?? "";
+    if (pattern.test(binding)) {
+      return true;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  return false;
 }
 
 /**
