@@ -10,11 +10,8 @@ import {
   reduceHudState,
 } from "./state.mjs";
 import {
-  DEFAULT_INTERACTION_MODE,
-  isInteractionMode,
-  isInteractionModeControl,
-  modeButtonLayout,
-} from "./interaction-mode.mjs";
+  copyActionLayout,
+} from "./copy-action.mjs";
 import {
   fitDisplay,
   formatDuration,
@@ -32,32 +29,24 @@ const ANSI = {
 /**
  * @typedef {{
  *   expanded: boolean,
- *   interactionMode: "hud" | "copy",
- *   selectionControls: boolean,
+ *   copyActionControls: boolean,
  * }} HudControls
  */
 
 /**
  * @param {{
  *   expanded?: boolean,
- *   interactionMode?: unknown,
- *   selectionControls?: boolean,
+ *   copyActionControls?: boolean,
  * }} [options]
  * @returns {HudControls}
  */
 export function createHudControls({
   expanded = false,
-  interactionMode = DEFAULT_INTERACTION_MODE,
-  selectionControls = false,
+  copyActionControls = false,
 } = {}) {
-  const enabled = selectionControls === true;
   return {
     expanded: expanded === true,
-    interactionMode:
-      enabled && isInteractionMode(interactionMode)
-        ? interactionMode
-        : DEFAULT_INTERACTION_MODE,
-    selectionControls: enabled,
+    copyActionControls: copyActionControls === true,
   };
 }
 
@@ -86,13 +75,6 @@ export function reduceHudControls(controls, control) {
   if (isTodoToggleControl(control)) {
     return { ...controls, expanded: !controls.expanded };
   }
-  if (
-    controls.selectionControls &&
-    isInteractionModeControl(control) &&
-    controls.interactionMode !== control.mode
-  ) {
-    return { ...controls, interactionMode: control.mode };
-  }
   return controls;
 }
 
@@ -103,9 +85,8 @@ export function reduceHudControls(controls, control) {
  *   height: number,
  *   color?: boolean,
  *   expanded?: boolean,
- *   interactionMode?: "hud" | "copy",
  *   now?: number,
- *   selectionControls?: boolean,
+ *   copyActionControls?: boolean,
  * }} options
  */
 export function renderHud(
@@ -115,17 +96,15 @@ export function renderHud(
     height,
     color = true,
     expanded = false,
-    interactionMode = DEFAULT_INTERACTION_MODE,
     now = Date.now(),
-    selectionControls = false,
+    copyActionControls = false,
   },
 ) {
   const safeWidth = Math.max(1, width);
   const safeHeight = Math.max(1, height);
   const controls = createHudControls({
     expanded,
-    interactionMode,
-    selectionControls,
+    copyActionControls,
   });
   const full =
     safeHeight >= 6 && safeWidth >= (controls.expanded ? 50 : 80);
@@ -217,8 +196,8 @@ function renderCompact(state, width, now, controls) {
 }
 
 /**
- * Keep the controls' visible layout and click geometry in the shared
- * interaction-mode contract. The left header uses only the remaining display
+ * Keep the action's visible layout and click geometry in the shared
+ * copy-action contract. The left header uses only the remaining display
  * columns, so CJK task text cannot overlap the right-aligned controls.
  *
  * @param {string} left
@@ -226,8 +205,8 @@ function renderCompact(state, width, now, controls) {
  * @param {HudControls} controls
  */
 function renderHeader(left, width, controls) {
-  const layout = controls.selectionControls
-    ? modeButtonLayout(width, controls.interactionMode)
+  const layout = controls.copyActionControls
+    ? copyActionLayout(width)
     : null;
   return layout
     ? `${fitDisplay(left, layout.startColumn)}${layout.text}`
@@ -376,9 +355,8 @@ export function replayNewControls(
  *   controlCount?: number,
  *   expanded?: boolean,
  *   height: number,
- *   interactionMode?: "hud" | "copy",
  *   now: number,
- *   selectionControls?: boolean,
+ *   copyActionControls?: boolean,
  *   width: number,
  * }} input
  */
@@ -388,16 +366,12 @@ export function renderRevision({
   expanded = false,
   width,
   height,
-  interactionMode = DEFAULT_INTERACTION_MODE,
   now,
-  selectionControls = false,
+  copyActionControls = false,
 }) {
   const base = `${eventCount}:${controlCount}:${expanded}:${width}:${height}:${Math.floor(now / 1_000)}`;
-  const mode = isInteractionMode(interactionMode)
-    ? interactionMode
-    : DEFAULT_INTERACTION_MODE;
-  return selectionControls === true && modeButtonLayout(width, mode)
-    ? `${base}:${mode}`
+  return copyActionControls === true && copyActionLayout(width)
+    ? `${base}:copy-action`
     : base;
 }
 
@@ -421,8 +395,7 @@ export function diffFrame(previous, next) {
  * @param {{
  *   runDirectory: string,
  *   env?: NodeJS.ProcessEnv,
- *   interactionMode?: "hud" | "copy",
- *   selectionControls?: boolean,
+ *   copyActionControls?: boolean,
  *   stdout?: NodeJS.WriteStream,
  *   intervalMs?: number,
  *   resize?: typeof resizeHudPane
@@ -431,8 +404,7 @@ export function diffFrame(previous, next) {
 export async function runRenderer({
   runDirectory,
   env = process.env,
-  interactionMode = DEFAULT_INTERACTION_MODE,
-  selectionControls = false,
+  copyActionControls = false,
   stdout = process.stdout,
   intervalMs = 100,
   resize = resizeHudPane,
@@ -458,8 +430,7 @@ export async function runRenderer({
   const seenControls = new Set();
   const seenEvents = new Set();
   let controls = createHudControls({
-    interactionMode,
-    selectionControls,
+    copyActionControls,
   });
   let previousFrame;
   let previousLayoutRevision;
@@ -505,9 +476,8 @@ export async function runRenderer({
         eventCount: seenEvents.size,
         expanded: controls.expanded,
         height,
-        interactionMode: controls.interactionMode,
         now,
-        selectionControls: controls.selectionControls,
+        copyActionControls: controls.copyActionControls,
         width,
       });
 
@@ -516,9 +486,8 @@ export async function runRenderer({
           color: env.NO_COLOR === undefined,
           expanded: controls.expanded,
           height,
-          interactionMode: controls.interactionMode,
           now,
-          selectionControls: controls.selectionControls,
+          copyActionControls: controls.copyActionControls,
           width,
         });
         const output = diffFrame(previousFrame, frame);
