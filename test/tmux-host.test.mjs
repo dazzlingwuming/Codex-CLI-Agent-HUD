@@ -205,6 +205,13 @@ test("HUD mouse bindings own selection, scrollback, and explicit copy only", () 
       tableBindings.find((binding) => binding[3] === "WheelDownPane")?.join(" ") ?? "",
       /scroll-down/u,
     );
+    const wheelDown =
+      tableBindings.find((binding) => binding[3] === "WheelDownPane")?.join(" ") ?? "";
+    assert.match(
+      wheelDown,
+      /scroll_position.*-N 5 scroll-down.*history-bottom/u,
+      "downward scrolling must use a selection-preserving bottom boundary",
+    );
     assert.match(
       tableBindings.find((binding) => binding[3] === "q")?.join(" ") ?? "",
       /send-keys -X cancel/u,
@@ -1069,6 +1076,23 @@ test("HUD-owned tmux keeps selection through scroll and copies only explicitly",
   assert.equal(stoppedWheel.inMode, "1");
   assert.equal(stoppedWheel.selectionPresent, "1");
   assert.notEqual(stoppedWheel.scrollPosition, "0");
+
+  const wheelEventsPastBottom =
+    Math.ceil(Number(stoppedWheel.scrollPosition) / 5) + 2;
+  await sendTmuxMouseEvents({
+    events: Array.from({ length: wheelEventsPastBottom }, () => ({
+      code: 65,
+      column,
+      row,
+      suffix: "M",
+    })),
+    session: "persistent",
+    socket,
+  });
+  const bottomWheel = paneCopyState(socket, codexPane);
+  assert.equal(bottomWheel.inMode, "1");
+  assert.equal(bottomWheel.scrollPosition, "0");
+  assert.equal(bottomWheel.selectionPresent, "1");
 
   tmuxText(socket, [
     "send-keys",

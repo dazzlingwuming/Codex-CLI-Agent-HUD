@@ -21,6 +21,7 @@ import {
 } from "./run-directory.mjs";
 
 const COPY_MODE_TABLES = Object.freeze(["copy-mode", "copy-mode-vi"]);
+const COPY_MODE_WHEEL_LINES = 5;
 const HUD_SELECTION_BUFFER_PREFIX = "codex-hud-selection";
 const MACOS_COPY_COMMAND = "/usr/bin/pbcopy";
 const TMUX_PANE_ID = /^%[0-9]+$/u;
@@ -741,13 +742,30 @@ export function hudMouseBindings({
         clickHandler,
         hudPane,
         key: "WheelDownPane",
-        codexCommand: "send-keys -X -N 5 scroll-down",
+        codexCommand: boundedCopyModeScrollDownCommand(),
       }),
       ["bind-key", "-T", table, "q", "send-keys", "-X", "cancel"],
       copyModeEnterBinding(table, copyCommand),
     );
   }
   return bindings;
+}
+
+/**
+ * tmux's copy-mode `scroll-down` command cancels copy-mode when it is invoked
+ * at the bottom boundary. Cancelling also destroys the active selection. A
+ * wheel tick therefore uses the ordinary five-line move only while more than
+ * five lines remain. Near the boundary, `history-bottom` reaches position zero
+ * without leaving copy-mode or clearing the selection.
+ */
+function boundedCopyModeScrollDownCommand() {
+  return [
+    "if-shell",
+    "-F",
+    `"#{e|>:#{scroll_position},${COPY_MODE_WHEEL_LINES}}"`,
+    `"send-keys -X -N ${COPY_MODE_WHEEL_LINES} scroll-down"`,
+    '"send-keys -X history-bottom"',
+  ].join(" ");
 }
 
 /**
