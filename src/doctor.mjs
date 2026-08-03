@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 
 import { HOOK_EVENTS, HOOK_MARKER } from "./constants.mjs";
 import { codexHome } from "./hooks-config.mjs";
+import { isJetBrainsTerminal } from "./interaction-mode.mjs";
 import {
   hasShellIntegration,
   shellRcPath,
@@ -205,13 +206,13 @@ function terminalCheck(env) {
     .join(" ");
   const normalized = identity.toLowerCase();
 
-  if (/jetbrains|jediterm|pycharm|intellij/u.test(normalized)) {
+  if (isJetBrainsTerminal(env)) {
     return {
       name: "terminal",
       status: "warn",
-      detail: `${identity || "JetBrains terminal"} (use IDE 2025.3.2+)`,
+      detail: `${identity || "JetBrains terminal"} (manual verification required; use IDE 2025.3.2+)`,
       recovery:
-        "Update PyCharm/IntelliJ to 2025.3.2 or newer if interactive output flickers.",
+        "PyCharm copy mode is not verified automatically: turn Mouse reporting on, turn Copy to clipboard on selection off, and keep Terminal Copy bound to ⌘C. Doctor cannot read or change IDE settings.",
     };
   }
   if (
@@ -222,13 +223,13 @@ function terminalCheck(env) {
     return {
       name: "terminal",
       status: "ok",
-      detail: identity || "xterm-compatible terminal",
+      detail: `${identity || "xterm-compatible terminal"} (PyCharm-only controls disabled; standard tmux behavior retained)`,
     };
   }
   return {
     name: "terminal",
     status: "warn",
-    detail: identity || "unknown terminal",
+    detail: `${identity || "unknown terminal"} (PyCharm-only controls disabled; standard tmux behavior retained)`,
     recovery:
       "Use an xterm-compatible macOS terminal; run an interactive smoke test before relying on mouse controls.",
   };

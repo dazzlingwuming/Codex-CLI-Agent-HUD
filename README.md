@@ -30,7 +30,8 @@ HUD 持续展示当前任务、运行阶段、完成比例、正在执行的动�
 - **始终位于终端底部**：Codex 保持在上方，HUD 使用独立区域持续显示状态。
 - **真实计划进度**：Todo 和百分比来自 Codex 的 `update_plan`，不会根据文本猜测进度。
 - **可点击 Todo**：收起时保留关键步骤，点击后展开完整列表，再次点击即可收起。
-- **保留滚动历史**：鼠标滚轮进入 tmux copy-mode，可以回看当前 Codex 会话输出。
+- **稳定滚动历史**：鼠标滚轮进入 tmux copy-mode，可以回看当前 Codex 会话输出；拖选、松开或单击不会自动回到最新输出。
+- **PyCharm 双模式复制**：仅在 HUD 自己创建的隔离 tmux 内，为 PyCharm / JetBrains Terminal 提供可点击的“复制模式”和“HUD 模式”；复制仍由 PyCharm 原生选区和 `⌘C` 完成。
 - **兼顾嵌入式终端**：针对 JetBrains Terminal 的运行中闪烁启用动画抑制和同步帧输出。
 - **低侵入、可回滚**：Hooks 和 shell 入口都带有明确归属标记，卸载时只删除本项目写入的内容。
 - **本地与脱敏**：不上传运行状态，不保存完整 transcript、工具输出或模型推理。
@@ -60,12 +61,12 @@ Codex 官方 Hooks 提供结构化生命周期事件，`tmux` 为原始 Codex TU
 
 终端兼容目标包括：
 
-- Apple Terminal
-- PyCharm / IntelliJ 内置 Terminal
-- VS Code 内置 Terminal
+- Apple Terminal（HUD 与标准 tmux 滚动；不显示 PyCharm 双模式按钮）
+- PyCharm / IntelliJ 内置 Terminal（双模式按钮仅限下文的隔离 HUD 条件）
+- VS Code 内置 Terminal（HUD 与标准 tmux 滚动；不显示 PyCharm 双模式按钮）
 - iTerm2、Warp、WezTerm、Alacritty、Kitty 等兼容 xterm 的 macOS 终端
 
-自动测试通过真实 PTY/tmux 验证 pane、鼠标绑定、scrollback、动态 resize 和退出码；并不等同于所有 GUI 终端版本都经过人工验收。JetBrains 终端建议使用 2025.3.2 或更新版本，旧版存在交互式 CLI 同步输出闪烁问题。
+自动测试通过真实 PTY/tmux 验证 pane、鼠标绑定、scrollback、动态 resize 和退出码；并不等同于所有 GUI 终端版本都经过人工验收。JetBrains 终端建议使用 2025.3.2 或更新版本，旧版存在交互式 CLI 同步输出闪烁问题；PyCharm 双模式复制还需要完成下方的手工验收。
 
 其他操作系统在 v0.1 中为 `not verified`。托管型 WebSearch 不经过本地 Tool Hooks，因此运行时只能显示 `Working`，无法显示具体 WebSearch 动作。
 
@@ -153,13 +154,36 @@ HUD 会话还默认传入 Codex 官方的 `--no-alt-screen`，让输出保留在
 
 ## 鼠标、Todo 与滚动
 
+### 所有终端
+
 - 左键点击 HUD 的 Todo 区域或 `(+N more · click)` 可展开；再次点击可收起。
 - 展开高度根据 Todo 数量和窗口高度动态计算，始终为上方 Codex 保留至少 10 行。
 - 在上方 Codex pane 使用滚轮会进入 tmux copy-mode，并回看当前 HUD 会话的终端输出。
-- 在 copy-mode 中继续滚轮浏览，按 `q` 返回 Codex 输入。
-- 若需要让外层终端直接处理选区或滚动，可使用对应终端的 tmux bypass 修饰键；常见是按住 `Shift`，具体以终端设置为准。
+- 进入历史后，拖选、松开（`MouseDragEnd`）或再次单击都不会自动复制、退出 copy-mode 或跳回最新输出；按 `q` 才返回 Codex 输入。
+- Apple Terminal、VS Code 和其他非 JetBrains 终端不显示 PyCharm 双模式按钮，保留标准 tmux 鼠标和滚动行为。若需要让外层终端直接处理选区或滚动，可使用该终端配置的 tmux bypass 修饰键；常见是按住 `Shift`，具体以终端设置为准。
 
 这里的 scrollback 是本次 HUD/tmux 会话产生的输出，不包含启动 `codex` 之前外层 shell 已有的历史。
+
+### PyCharm 双模式复制（仅 HUD 自有 isolated tmux）
+
+在 PyCharm / IntelliJ 内置 Terminal 中直接运行 `codex` 时，HUD 会创建自己的隔离 tmux server，并在 HUD 右侧显示 `[复制模式]` 和 `[HUD 模式]` 两个可点击按钮。每次会话默认是 **HUD 模式**。如果在用户已有 tmux server 中启动，按钮会刻意隐藏，避免修改该 server 的全局键表；Apple Terminal、VS Code 也不会显示这些按钮。
+
+- **HUD 模式**保留 Todo 和原有 HUD 鼠标交互。
+- **复制模式**仍保持 tmux `mouse` 为开启状态，以便两个按钮始终可点击；它只抑制 tmux 的第二层拖选，文本选区由 PyCharm 原生临时选区处理。
+- 点击按钮、拖选或松开鼠标都不会自动写入系统剪贴板。选中需要的文本后，按 `⌘C` 才复制；HUD 不调用 `pbcopy`、OSC52 或 tmux 自动复制命令。
+- 在历史 copy-mode 中，两个模式按钮仍可切换；拖选、`MouseDragEnd` 和单击都保留当前历史位置，`q` 是唯一的退出动作。
+
+这不是跨终端的原生复制承诺：PyCharm 的原生临时选区、鼠标处理和 `⌘C` 由 IDE 负责，HUD 无法读取或修改这些 IDE 配置。
+
+### PyCharm 手工验收
+
+在当前 PyCharm 终端引擎中，先将 `Settings | Tools | Terminal` 的 **Mouse reporting** 打开、**Copy to clipboard on selection** 关闭，并确认 Terminal 的 Copy 仍绑定为 `⌘C`。`codex-hud doctor` 只会提示这些前提，不能自动检查或修改它们。
+
+1. 在 PyCharm 内直接执行 `codex`（不要先进入用户 tmux），确认 HUD 自动出现、默认选中 HUD 模式，且两个按钮都可点击。
+2. 使用一段非敏感、包含中英文和多行的唯一文本。切到复制模式后用 PyCharm 原生临时选区拖选；松手后选区仍保留，系统剪贴板仍是预先写入的哨兵文本。
+3. 按 `⌘C` 后，剪贴板仅包含选中的文本，Codex 没有收到中断，HUD 仍在运行。
+4. 滚轮回看历史后，分别执行拖选、松开和单击；视口不得跳回底部，也不得自动复制或退出。按 `q` 后才退出历史模式。
+5. 在 HUD 模式和复制模式各重复一次上述历史操作。若出现双层选区、松手丢失选区、自动复制、`⌘C` 中断 Codex 或跳底，应标记为 `degraded / not verified`，不要把该 PyCharm 引擎视为已验收。
 
 ## HUD 状态含义
 
@@ -197,7 +221,7 @@ codex-hud doctor
 
 自动测试覆盖 Hooks 合并与卸载、shell 入口与回滚、交互/非交互路由、并发/乱序事件、精确进度、凭据脱敏、中文宽度、差量渲染、tmux scrollback、Todo 展开/收起、pane 生命周期、Codex 参数和退出码透传。
 
-当前自动化验证包含 50 个测试。真实 GUI 终端的字体、主题和滚动行为仍可能受终端自身配置影响。
+真实 GUI 终端的字体、主题、原生选区和滚动行为仍可能受终端自身配置影响；PyCharm 双模式复制必须按上方手工验收执行，自动测试不能代替它。
 
 ## 故障排查
 
@@ -209,7 +233,9 @@ codex-hud doctor
 - WebSearch 时只显示 `Working`：这是当前 Codex Hosted Tool Hook 覆盖范围的已知限制。
 - `codex` 没有自动进入 HUD：执行 `codex-hud setup` 后打开新终端，或运行 `source ~/.zshrc`；再用 `type codex` 确认它是 HUD 安装的 function。
 - PyCharm 输入区仍高频闪烁：确认已经退出旧会话并重新执行 `codex`，再检查真实启动参数是否包含 `tui.animations=false`，且 tmux client features 包含 `sync`；同时升级 PyCharm/IntelliJ 平台到 2025.3.2 或更新版本。HUD 已关闭 Codex 运行中动画、启用同步帧并使用差量刷新，但无法从应用层修复旧版 JetBrains Terminal 的同步输出渲染缺陷。
-- 滚轮进入 copy-mode 后不能继续输入：按 `q` 退出 copy-mode。
+- PyCharm 双模式按钮没有出现：确认是在 PyCharm / IntelliJ 内置 Terminal 中直接运行 `codex`，让 HUD 自己创建隔离 tmux。用户已有 tmux、Apple Terminal 和 VS Code 会刻意隐藏按钮。
+- PyCharm 松手后已复制，或 `⌘C` 中断了 Codex：检查 **Mouse reporting** 已开启、**Copy to clipboard on selection** 已关闭，并确认 Terminal Copy 仍绑定为 `⌘C`。doctor 不能替你读取或修改这些 IDE 设置。
+- 滚轮进入 copy-mode 后不能继续输入：按 `q` 退出 copy-mode；拖选、松开或单击不应自动退出或跳回底部。若仍发生，按 PyCharm 手工验收记录为 `degraded / not verified`。
 
 ## 卸载与回滚
 
