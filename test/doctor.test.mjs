@@ -36,7 +36,7 @@ test("doctor distinguishes missing and installed HUD hooks", (context) => {
   assert.match(formatDoctorText(after), /Codex HUD Doctor/u);
 });
 
-test("doctor recognizes common terminal families and flags old JetBrains risk", () => {
+test("doctor describes PyCharm copy mode as manual verification only", () => {
   const stdin = /** @type {NodeJS.ReadStream} */ (
     /** @type {unknown} */ ({ isTTY: true })
   );
@@ -53,7 +53,10 @@ test("doctor recognizes common terminal families and flags old JetBrains risk", 
     stdin,
     stdout,
   });
-  assert.equal(apple.find((check) => check.name === "terminal")?.status, "ok");
+  const appleTerminal = apple.find((check) => check.name === "terminal");
+  assert.equal(appleTerminal?.status, "ok");
+  assert.match(appleTerminal?.detail || "", /PyCharm-only controls disabled/u);
+  assert.match(appleTerminal?.detail || "", /standard tmux behavior retained/u);
 
   const vscode = collectDoctorChecks({
     env: {
@@ -65,11 +68,14 @@ test("doctor recognizes common terminal families and flags old JetBrains risk", 
     stdin,
     stdout,
   });
-  assert.equal(vscode.find((check) => check.name === "terminal")?.status, "ok");
+  const vscodeTerminal = vscode.find((check) => check.name === "terminal");
+  assert.equal(vscodeTerminal?.status, "ok");
+  assert.match(vscodeTerminal?.detail || "", /PyCharm-only controls disabled/u);
 
   const jetbrains = collectDoctorChecks({
     env: {
       ...process.env,
+      __CFBundleIdentifier: "",
       TERMINAL_EMULATOR: "JetBrains-JediTerm",
       TERM_PROGRAM: "",
     },
@@ -79,4 +85,10 @@ test("doctor recognizes common terminal families and flags old JetBrains risk", 
   const terminal = jetbrains.find((check) => check.name === "terminal");
   assert.equal(terminal?.status, "warn");
   assert.match(terminal?.detail || "", /2025\.3\.2/u);
+  assert.match(terminal?.detail || "", /manual verification required/u);
+  assert.match(terminal?.recovery || "", /Mouse reporting on/u);
+  assert.match(terminal?.recovery || "", /Copy to clipboard on selection off/u);
+  assert.match(terminal?.recovery || "", /⌘C/u);
+  assert.match(terminal?.recovery || "", /cannot read or change IDE settings/u);
+  assert.match(formatDoctorText(jetbrains), /manual verification required/u);
 });
