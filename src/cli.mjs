@@ -32,10 +32,9 @@ import {
   uninstallShellIntegration,
 } from "./shell-integration.mjs";
 import {
-  readHudInteractionMode,
+  copyHudSelection,
   runHud,
   runInsideTmux,
-  setHudInteractionMode,
 } from "./tmux-host.mjs";
 
 export const VERSION = "0.1.0";
@@ -97,7 +96,7 @@ export async function runCli(
   if (command === "__hud-click") {
     const [
       runDirectory,
-      sessionId,
+      codexPane,
       mouseX,
       mouseY,
       paneWidth,
@@ -105,7 +104,7 @@ export async function runCli(
     if (
       [
         runDirectory,
-        sessionId,
+        codexPane,
         mouseX,
         mouseY,
         paneWidth,
@@ -115,14 +114,13 @@ export async function runCli(
     }
     try {
       return handleHudClick({
+        codexPane,
+        copySelection: copyHudSelection,
         env: process.env,
         mouseX,
         mouseY,
         paneWidth,
-        readMode: readHudInteractionMode,
         runDirectory,
-        sessionId,
-        setMode: setHudInteractionMode,
       });
     } catch (error) {
       io.stderr.write(
@@ -151,10 +149,10 @@ export async function runCli(
       }
       const meta = readRunMeta(runDirectory);
       return await runRenderer({
-        runDirectory,
-        selectionControls:
-          meta?.selectionControls === true &&
+        copyActionControls:
+          meta?.copyActionControls === true &&
           meta?.ownsTmuxServer === true,
+        runDirectory,
       });
     } catch (error) {
       io.stderr.write(`codex-hud renderer degraded: ${errorMessage(error)}\n`);
