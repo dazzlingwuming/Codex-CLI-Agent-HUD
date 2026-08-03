@@ -223,13 +223,13 @@ function terminalCheck(env) {
     return {
       name: "terminal",
       status: "ok",
-      detail: `${identity || "xterm-compatible terminal"} (PyCharm-only controls disabled; standard tmux behavior retained)`,
+      detail: `${identity || "xterm-compatible terminal"} (PyCharm-only controls disabled; HUD scrollback available)`,
     };
   }
   return {
     name: "terminal",
     status: "warn",
-    detail: `${identity || "unknown terminal"} (PyCharm-only controls disabled; standard tmux behavior retained)`,
+    detail: `${identity || "unknown terminal"} (PyCharm-only controls disabled; HUD scrollback available)`,
     recovery:
       "Use an xterm-compatible macOS terminal; run an interactive smoke test before relying on mouse controls.",
   };
