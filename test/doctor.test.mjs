@@ -36,7 +36,7 @@ test("doctor distinguishes missing and installed HUD hooks", (context) => {
   assert.match(formatDoctorText(after), /Codex HUD Doctor/u);
 });
 
-test("doctor describes PyCharm copy mode as manual verification only", () => {
+test("doctor marks persistent tmux selection and explicit copy as manual GUI verification", () => {
   const stdin = /** @type {NodeJS.ReadStream} */ (
     /** @type {unknown} */ ({ isTTY: true })
   );
@@ -54,13 +54,13 @@ test("doctor describes PyCharm copy mode as manual verification only", () => {
     stdout,
   });
   const appleTerminal = apple.find((check) => check.name === "terminal");
-  assert.equal(appleTerminal?.status, "ok");
-  assert.match(appleTerminal?.detail || "", /PyCharm-only controls disabled/u);
-  assert.match(appleTerminal?.detail || "", /HUD scrollback available/u);
-  assert.doesNotMatch(
-    appleTerminal?.detail || "",
-    /standard tmux behavior retained/u,
-  );
+  assert.equal(appleTerminal?.status, "warn");
+  assert.match(appleTerminal?.detail || "", /manual GUI verification required/u);
+  assert.match(appleTerminal?.detail || "", /persistent tmux selection/u);
+  assert.match(appleTerminal?.detail || "", /explicit copy action/u);
+  assert.match(appleTerminal?.recovery || "", /\[复制所选\]/u);
+  assert.match(appleTerminal?.recovery || "", /Enter/u);
+  assert.doesNotMatch(appleTerminal?.detail || "", /PyCharm-only/u);
 
   const vscode = collectDoctorChecks({
     env: {
@@ -73,13 +73,12 @@ test("doctor describes PyCharm copy mode as manual verification only", () => {
     stdout,
   });
   const vscodeTerminal = vscode.find((check) => check.name === "terminal");
-  assert.equal(vscodeTerminal?.status, "ok");
-  assert.match(vscodeTerminal?.detail || "", /PyCharm-only controls disabled/u);
-  assert.match(vscodeTerminal?.detail || "", /HUD scrollback available/u);
-  assert.doesNotMatch(
-    vscodeTerminal?.detail || "",
-    /standard tmux behavior retained/u,
-  );
+  assert.equal(vscodeTerminal?.status, "warn");
+  assert.match(vscodeTerminal?.detail || "", /manual GUI verification required/u);
+  assert.match(vscodeTerminal?.detail || "", /persistent tmux selection/u);
+  assert.match(vscodeTerminal?.detail || "", /explicit copy action/u);
+  assert.match(vscodeTerminal?.recovery || "", /\[复制所选\]/u);
+  assert.match(vscodeTerminal?.recovery || "", /Enter/u);
 
   const unknown = collectDoctorChecks({
     env: {
@@ -94,14 +93,12 @@ test("doctor describes PyCharm copy mode as manual verification only", () => {
   });
   const unknownTerminal = unknown.find((check) => check.name === "terminal");
   assert.equal(unknownTerminal?.status, "warn");
+  assert.match(unknownTerminal?.detail || "", /manual GUI verification required/u);
+  assert.match(unknownTerminal?.detail || "", /persistent tmux selection/u);
+  assert.match(unknownTerminal?.detail || "", /explicit copy action/u);
   assert.match(
-    unknownTerminal?.detail || "",
-    /PyCharm-only controls disabled/u,
-  );
-  assert.match(unknownTerminal?.detail || "", /HUD scrollback available/u);
-  assert.doesNotMatch(
-    unknownTerminal?.detail || "",
-    /standard tmux behavior retained/u,
+    unknownTerminal?.recovery || "",
+    /persistent selection and explicit copy/u,
   );
 
   const jetbrains = collectDoctorChecks({
@@ -117,10 +114,16 @@ test("doctor describes PyCharm copy mode as manual verification only", () => {
   const terminal = jetbrains.find((check) => check.name === "terminal");
   assert.equal(terminal?.status, "warn");
   assert.match(terminal?.detail || "", /2025\.3\.2/u);
-  assert.match(terminal?.detail || "", /manual verification required/u);
+  assert.match(terminal?.detail || "", /manual GUI verification required/u);
+  assert.match(terminal?.detail || "", /persistent tmux selection/u);
+  assert.match(terminal?.detail || "", /explicit copy action/u);
   assert.match(terminal?.recovery || "", /Mouse reporting on/u);
   assert.match(terminal?.recovery || "", /Copy to clipboard on selection off/u);
-  assert.match(terminal?.recovery || "", /⌘C/u);
+  assert.match(terminal?.recovery || "", /\[复制所选\]/u);
+  assert.match(terminal?.recovery || "", /Enter/u);
+  assert.match(terminal?.recovery || "", /tmux highlight/u);
   assert.match(terminal?.recovery || "", /cannot read or change IDE settings/u);
-  assert.match(formatDoctorText(jetbrains), /manual verification required/u);
+  assert.doesNotMatch(terminal?.detail || "", /copy mode/u);
+  assert.doesNotMatch(terminal?.recovery || "", /copy mode/u);
+  assert.match(formatDoctorText(jetbrains), /manual GUI verification required/u);
 });
