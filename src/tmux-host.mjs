@@ -19,6 +19,14 @@ import {
   removeRunDirectory,
   writeRunJson,
 } from "./run-directory.mjs";
+import {
+  DEFAULT_INTERACTION_MODE,
+  isInteractionMode,
+  supportsSelectionControls,
+} from "./interaction-mode.mjs";
+
+const HUD_INTERACTION_MODE_OPTION = "@codex_hud_interaction_mode";
+const COPY_MODE_TABLES = Object.freeze(["copy-mode", "copy-mode-vi"]);
 
 /**
  * @param {string[]} args
@@ -177,7 +185,18 @@ export async function runHud({
 
   const launchId = randomUUID();
   const ownsTmuxServer = !(env.TMUX && env.TMUX_PANE);
-  const runDirectory = createRunDirectory({ cwd, env, launchId });
+  const selectionControls = supportsSelectionControls({
+    env,
+    ownsTmuxServer,
+  });
+  const runDirectoryOptions = {
+    cwd,
+    env,
+    launchId,
+    ownsTmuxServer,
+    selectionControls,
+  };
+  const runDirectory = createRunDirectory(runDirectoryOptions);
   const launch = {
     codexArgs,
     codexBin: env[CODEX_BINARY_ENV] || "codex",
@@ -275,6 +294,16 @@ function launchIsolatedTmux({
           "mouse",
           "on",
           ";",
+          "set-option",
+          "-g",
+          "set-clipboard",
+          "off",
+          ";",
+          "set-option",
+          "-g",
+          "copy-command",
+          "",
+          ";",
           "new-session",
           "-s",
           "hud",
@@ -323,6 +352,55 @@ export function tmuxClientFeatureArgs(env = process.env) {
   return /jetbrains|jediterm|pycharm|intellij/u.test(identity)
     ? ["-T", "sync"]
     : [];
+}
+
+/**
+ * Read the HUD interaction mode stored locally on a tmux session.
+ * Missing or malformed values are deliberately treated as the safe HUD
+ * default rather than being exposed to event handlers.
+ *
+ * @param {string} sessionId
+ * @param {NodeJS.ProcessEnv} [env]
+ * @returns {"hud" | "copy"}
+ */
+export function readHudInteractionMode(sessionId, env = process.env) {
+  const value = tmuxOutput(
+    [
+      "show-options",
+      "-qv",
+      "-t",
+      sessionId,
+      HUD_INTERACTION_MODE_OPTION,
+    ],
+    env,
+  ).trim();
+  return isInteractionMode(value) ? value : DEFAULT_INTERACTION_MODE;
+}
+
+/**
+ * Set the HUD interaction mode locally on a tmux session. Mouse support is
+ * intentionally kept enabled in both modes because HUD controls remain
+ * clickable in copy mode.
+ *
+ * @param {string} sessionId
+ * @param {unknown} mode
+ * @param {NodeJS.ProcessEnv} [env]
+ * @returns {"hud" | "copy"}
+ */
+export function setHudInteractionMode(
+  sessionId,
+  mode,
+  env = process.env,
+) {
+  if (!isInteractionMode(mode)) {
+    throw new Error(`Invalid HUD interaction mode: ${String(mode)}`);
+  }
+  tmuxChecked(["set-option", "-t", sessionId, "mouse", "on"], env);
+  tmuxChecked(
+    ["set-option", "-t", sessionId, HUD_INTERACTION_MODE_OPTION, mode],
+    env,
+  );
+  return mode;
 }
 
 /**
@@ -460,64 +538,87 @@ export async function runInsideTmux({
     ["display-message", "-p", "-t", env.TMUX_PANE, "#{session_id}"],
     env,
   ).trim();
+  const ownsTmuxServer = launch.ownsTmuxServer !== false;
   const interactionSnapshot =
-    launch.ownsTmuxServer === false
+    !ownsTmuxServer
       ? snapshotTmuxInteraction(sessionId, env.TMUX_PANE, env)
       : null;
-
-  tmuxChecked(["set-option", "-t", sessionId, "status", "off"], env);
-  tmuxChecked(["set-option", "-t", sessionId, "mouse", "on"], env);
-  tmuxChecked(
-    [
-      "set-option",
-      "-w",
-      "-t",
-      env.TMUX_PANE,
-      "history-limit",
-      "100000",
-    ],
-    env,
-  );
-  tmuxChecked(["set-option", "-t", sessionId, "remain-on-exit", "off"], env);
-  tmuxChecked(["select-pane", "-t", env.TMUX_PANE, "-T", "Codex"], env);
-
-  const rendererCommand = [
-    quoteShellArgument(process.execPath),
-    quoteShellArgument(launch.entryPath),
-    "__render",
-    quoteShellArgument(runDirectory),
-  ].join(" ");
-  const hudPane = tmuxOutput(
-    [
-      "split-window",
-      "-v",
-      "-l",
-      String(hudHeight),
-      "-d",
-      "-P",
-      "-F",
-      "#{pane_id}",
-      "-t",
-      env.TMUX_PANE,
-      "-c",
-      launch.cwd,
-      rendererCommand,
-    ],
-    env,
-  ).trim();
-  tmuxChecked(["select-pane", "-t", hudPane, "-T", "Codex HUD"], env);
-  tmuxChecked(
-    todoMouseBinding({
-      entryPath: launch.entryPath,
-      hudPane,
-      runDirectory,
-    }),
-    env,
-  );
-  tmuxChecked(["select-pane", "-t", env.TMUX_PANE], env);
-
+  /** @type {string | null} */
+  let hudPane = null;
   let exitCode = 2;
   try {
+    tmuxChecked(["set-option", "-t", sessionId, "status", "off"], env);
+    tmuxChecked(["set-option", "-t", sessionId, "mouse", "on"], env);
+    tmuxChecked(
+      [
+        "set-option",
+        "-w",
+        "-t",
+        env.TMUX_PANE,
+        "history-limit",
+        "100000",
+      ],
+      env,
+    );
+    tmuxChecked(
+      ["set-option", "-w", "-t", env.TMUX_PANE, "remain-on-exit", "off"],
+      env,
+    );
+    tmuxChecked(
+      ["select-pane", "-t", env.TMUX_PANE, "-T", "Codex"],
+      env,
+    );
+    if (ownsTmuxServer) {
+      setHudInteractionMode(sessionId, DEFAULT_INTERACTION_MODE, env);
+    }
+
+    const rendererCommand = [
+      quoteShellArgument(process.execPath),
+      quoteShellArgument(launch.entryPath),
+      "__render",
+      quoteShellArgument(runDirectory),
+    ].join(" ");
+    hudPane = tmuxOutput(
+      [
+        "split-window",
+        "-v",
+        "-l",
+        String(hudHeight),
+        "-d",
+        "-P",
+        "-F",
+        "#{pane_id}",
+        "-t",
+        env.TMUX_PANE,
+        "-c",
+        launch.cwd,
+        rendererCommand,
+      ],
+      env,
+    ).trim();
+    tmuxChecked(["select-pane", "-t", hudPane, "-T", "Codex HUD"], env);
+    tmuxChecked(
+      todoMouseBinding({
+        codexPane: env.TMUX_PANE,
+        entryPath: launch.entryPath,
+        hudPane,
+        runDirectory,
+        usesInteractionModes: ownsTmuxServer,
+      }),
+      env,
+    );
+    if (ownsTmuxServer) {
+      for (const binding of hudMouseBindings({
+        codexPane: env.TMUX_PANE,
+        entryPath: launch.entryPath,
+        hudPane,
+        runDirectory,
+      })) {
+        tmuxChecked(binding, env);
+      }
+    }
+    tmuxChecked(["select-pane", "-t", env.TMUX_PANE], env);
+
     exitCode = await runCodexChild({
       args: withHudTuiDefaults(
         launch.codexArgs.filter((value) => typeof value === "string"),
@@ -529,10 +630,12 @@ export async function runInsideTmux({
     });
     return exitCode;
   } finally {
-    spawnSync("tmux", ["kill-pane", "-t", hudPane], {
-      env,
-      stdio: "ignore",
-    });
+    if (hudPane) {
+      spawnSync("tmux", ["kill-pane", "-t", hudPane], {
+        env,
+        stdio: "ignore",
+      });
+    }
     if (interactionSnapshot) {
       try {
         restoreTmuxInteraction(
@@ -553,24 +656,31 @@ export async function runInsideTmux({
 
 /**
  * @param {{
+ *   codexPane: string,
  *   entryPath: string,
  *   hudPane: string,
  *   runDirectory: string,
+ *   usesInteractionModes: boolean,
  *   nodePath?: string
  * }} options
  */
 export function todoMouseBinding({
+  codexPane,
   entryPath,
   hudPane,
   runDirectory,
+  usesInteractionModes,
   nodePath = process.execPath,
 }) {
-  const toggleCommand = [
-    quoteShellArgument(nodePath),
-    quoteShellArgument(entryPath),
-    "__toggle",
-    quoteShellArgument(runDirectory),
-  ].join(" ");
+  const clickCommand = hudClickCommand({
+    entryPath,
+    nodePath,
+    runDirectory,
+  });
+  const defaultMouseDown = "select-pane -t = \\; send-keys -M";
+  const nonHudMouseDown = usesInteractionModes
+    ? `if-shell -F ${copyModeMouseCondition(codexPane)} "select-pane -t =" "${defaultMouseDown}"`
+    : defaultMouseDown;
   return [
     "bind-key",
     "-T",
@@ -579,9 +689,214 @@ export function todoMouseBinding({
     "if-shell",
     "-F",
     `#{==:#{mouse_pane},${hudPane}}`,
-    `run-shell ${quoteShellArgument(toggleCommand)}`,
-    "select-pane -t = \\; send-keys -M",
+    hudClickHandler(clickCommand),
+    nonHudMouseDown,
   ];
+}
+
+/**
+ * Build the mouse policy for a HUD-owned tmux server. The session user option
+ * is evaluated by tmux at event time, so switching modes needs no key-table
+ * rewrite and mouse support can remain enabled for HUD controls.
+ *
+ * @param {{
+ *   codexPane: string,
+ *   entryPath: string,
+ *   hudPane: string,
+ *   runDirectory: string,
+ *   nodePath?: string
+ * }} options
+ */
+export function hudMouseBindings({
+  codexPane,
+  entryPath,
+  hudPane,
+  runDirectory,
+  nodePath = process.execPath,
+}) {
+  const copyModeCondition = copyModeMouseCondition(codexPane);
+  const clickHandler = hudClickHandler(
+    hudClickCommand({ entryPath, nodePath, runDirectory }),
+  );
+  const bindings = [
+    mouseEventBinding({
+      fallback: `if-shell -F ${copyModeCondition} "select-pane -t =" 'if-shell -F "#{||:#{pane_in_mode},#{mouse_any_flag}}" "send-keys -M" "copy-mode -M"'`,
+      hudCommand: noOpMouseCommand(),
+      hudPane,
+      key: "MouseDrag1Pane",
+      table: "root",
+    }),
+    rootWordSelectionBinding({
+      codexPane,
+      hudPane,
+      key: "DoubleClick1Pane",
+      selection: "select-word",
+    }),
+    rootWordSelectionBinding({
+      codexPane,
+      hudPane,
+      key: "TripleClick1Pane",
+      selection: "select-line",
+    }),
+  ];
+
+  for (const table of COPY_MODE_TABLES) {
+    bindings.push(
+      copyModeMouseBinding({
+        table,
+        codexPane,
+        clickHandler,
+        hudPane,
+        key: "MouseDown1Pane",
+        hudCommand: "select-pane -t = \\; send-keys -X clear-selection",
+      }),
+      copyModeMouseBinding({
+        table,
+        codexPane,
+        clickHandler,
+        hudPane,
+        key: "MouseDrag1Pane",
+        hudCommand: "select-pane -t = \\; send-keys -X begin-selection",
+      }),
+      copyModeMouseBinding({
+        table,
+        codexPane,
+        clickHandler,
+        hudPane,
+        key: "MouseDragEnd1Pane",
+        hudCommand: "send-keys -X stop-selection",
+      }),
+      copyModeMouseBinding({
+        table,
+        codexPane,
+        clickHandler,
+        hudPane,
+        key: "DoubleClick1Pane",
+        hudCommand:
+          "select-pane -t = \\; send-keys -X select-word \\; send-keys -X stop-selection",
+      }),
+      copyModeMouseBinding({
+        table,
+        codexPane,
+        clickHandler,
+        hudPane,
+        key: "TripleClick1Pane",
+        hudCommand:
+          "select-pane -t = \\; send-keys -X select-line \\; send-keys -X stop-selection",
+      }),
+    );
+  }
+  return bindings;
+}
+
+/**
+ * @param {{
+ *   codexPane: string,
+ *   hudPane: string,
+ *   key: string,
+ *   selection: "select-line" | "select-word"
+ * }} options
+ */
+function rootWordSelectionBinding({ codexPane, hudPane, key, selection }) {
+  return mouseEventBinding({
+    fallback: `if-shell -F ${copyModeMouseCondition(codexPane)} "select-pane -t =" "select-pane -t = \\; if-shell -F '#{||:#{pane_in_mode},#{mouse_any_flag}}' 'send-keys -M' 'copy-mode -H \\; send-keys -X ${selection} \\; send-keys -X stop-selection'"`,
+    hudCommand: noOpMouseCommand(),
+    hudPane,
+    key,
+    table: "root",
+  });
+}
+
+/**
+ * @param {{
+ *   table: string,
+ *   codexPane: string,
+ *   clickHandler: string,
+ *   hudPane: string,
+ *   key: string,
+ *   hudCommand: string
+ * }} options
+ */
+function copyModeMouseBinding({
+  table,
+  codexPane,
+  clickHandler,
+  hudPane,
+  key,
+  hudCommand,
+}) {
+  return mouseEventBinding({
+    fallback: `if-shell -F ${copyModeMouseCondition(codexPane)} "select-pane -t =" "${hudCommand}"`,
+    hudCommand:
+      key === "MouseDown1Pane" ? clickHandler : noOpMouseCommand(),
+    hudPane,
+    key,
+    table,
+  });
+}
+
+/**
+ * @param {{
+ *   fallback: string,
+ *   hudCommand: string,
+ *   hudPane: string,
+ *   key: string,
+ *   table: string
+ * }} options
+ */
+function mouseEventBinding({ fallback, hudCommand, hudPane, key, table }) {
+  return [
+    "bind-key",
+    "-T",
+    table,
+    key,
+    "if-shell",
+    "-F",
+    hudMouseCondition(hudPane),
+    hudCommand,
+    fallback,
+  ];
+}
+
+/**
+ * @param {{entryPath: string, nodePath: string, runDirectory: string}} options
+ */
+function hudClickCommand({ entryPath, nodePath, runDirectory }) {
+  return [
+    quoteShellArgument(nodePath),
+    quoteShellArgument(entryPath),
+    "__hud-click",
+    quoteShellArgument(runDirectory),
+    quoteShellArgument("#{session_id}"),
+    quoteShellArgument("#{mouse_x}"),
+    quoteShellArgument("#{mouse_y}"),
+    quoteShellArgument("#{pane_width}"),
+  ].join(" ");
+}
+
+/**
+ * @param {string} clickCommand
+ */
+function hudClickHandler(clickCommand) {
+  return `run-shell -t = ${quoteShellArgument(clickCommand)}`;
+}
+
+function noOpMouseCommand() {
+  return 'display-message -d 0 ""';
+}
+
+/**
+ * @param {string} hudPane
+ */
+function hudMouseCondition(hudPane) {
+  return `#{==:#{mouse_pane},${hudPane}}`;
+}
+
+/**
+ * @param {string} codexPane
+ */
+function copyModeMouseCondition(codexPane) {
+  return `#{&&:#{==:#{mouse_pane},${codexPane}},#{==:#{${HUD_INTERACTION_MODE_OPTION}},copy}}`;
 }
 
 /**
@@ -673,14 +988,24 @@ function tmuxChecked(args, env) {
  */
 function snapshotTmuxInteraction(sessionId, paneId, env) {
   return {
-    historyLimit: tmuxOutput(
-      ["show-options", "-wv", "-t", paneId, "history-limit"],
+    historyLimit: tmuxLocalOption(
+      ["-w"],
+      paneId,
+      "history-limit",
       env,
-    ).trim(),
-    mouse: tmuxOutput(
-      ["show-options", "-v", "-t", sessionId, "mouse"],
+    ),
+    mouse: tmuxLocalOption([], sessionId, "mouse", env),
+    paneTitle: tmuxOutput(
+      ["display-message", "-p", "-t", paneId, "#{pane_title}"],
       env,
-    ).trim(),
+    ).replace(/\r?\n$/u, ""),
+    remainOnExit: tmuxLocalOption(
+      ["-w"],
+      paneId,
+      "remain-on-exit",
+      env,
+    ),
+    status: tmuxLocalOption([], sessionId, "status", env),
     mouseBinding: tmuxKeyBinding(
       "root",
       "MouseDown1Pane",
@@ -690,7 +1015,14 @@ function snapshotTmuxInteraction(sessionId, paneId, env) {
 }
 
 /**
- * @param {{historyLimit: string, mouse: string, mouseBinding: string | null}} snapshot
+ * @param {{
+ *   historyLimit: string | null,
+ *   mouse: string | null,
+ *   mouseBinding: string | null,
+ *   paneTitle: string,
+ *   remainOnExit: string | null,
+ *   status: string | null
+ * }} snapshot
  * @param {string} sessionId
  * @param {string} paneId
  * @param {NodeJS.ProcessEnv} env
@@ -701,36 +1033,116 @@ function restoreTmuxInteraction(
   paneId,
   env,
 ) {
-  tmuxChecked(
-    ["set-option", "-t", sessionId, "mouse", snapshot.mouse],
-    env,
-  );
-  tmuxChecked(
-    [
-      "set-option",
-      "-w",
-      "-t",
+  /** @type {string[]} */
+  const errors = [];
+  /**
+   * @param {string} label
+   * @param {() => void} action
+   */
+  const restore = (label, action) => {
+    try {
+      action();
+    } catch (error) {
+      errors.push(`${label}: ${errorMessage(error)}`);
+    }
+  };
+
+  restore("status", () => {
+    restoreTmuxLocalOption([], sessionId, "status", snapshot.status, env);
+  });
+  restore("mouse", () => {
+    restoreTmuxLocalOption([], sessionId, "mouse", snapshot.mouse, env);
+  });
+  restore("history-limit", () => {
+    restoreTmuxLocalOption(
+      ["-w"],
       paneId,
       "history-limit",
       snapshot.historyLimit,
-    ],
-    env,
-  );
-  tmuxChecked(
-    ["unbind-key", "-T", "root", "MouseDown1Pane"],
-    env,
-  );
-  if (snapshot.mouseBinding) {
-    const restored = spawnSync("tmux", ["source-file", "-"], {
-      encoding: "utf8",
       env,
-      input: snapshot.mouseBinding,
-    });
-    if (restored.status !== 0) {
-      throw new Error(
-        `tmux mouse binding restore failed: ${(restored.stderr || restored.error?.message || "unknown error").trim()}`,
-      );
-    }
+    );
+  });
+  restore("remain-on-exit", () => {
+    restoreTmuxLocalOption(
+      ["-w"],
+      paneId,
+      "remain-on-exit",
+      snapshot.remainOnExit,
+      env,
+    );
+  });
+  restore("pane title", () => {
+    tmuxChecked(["select-pane", "-t", paneId, "-T", snapshot.paneTitle], env);
+  });
+  restore("root MouseDown1Pane binding", () => {
+    restoreTmuxKeyBinding("root", "MouseDown1Pane", snapshot.mouseBinding, env);
+  });
+
+  if (errors.length > 0) {
+    throw new Error(errors.join("; "));
+  }
+}
+
+/**
+ * Read a target-local tmux option. An empty result means the target inherited
+ * its value, which must be restored with `set-option -u` rather than an empty
+ * local override.
+ *
+ * @param {string[]} scopeArgs
+ * @param {string} target
+ * @param {string} option
+ * @param {NodeJS.ProcessEnv} env
+ */
+function tmuxLocalOption(scopeArgs, target, option, env) {
+  const value = tmuxOutput(
+    ["show-options", "-qv", ...scopeArgs, "-t", target, option],
+    env,
+  ).trim();
+  return value === "" ? null : value;
+}
+
+/**
+ * @param {string[]} scopeArgs
+ * @param {string} target
+ * @param {string} option
+ * @param {string | null} value
+ * @param {NodeJS.ProcessEnv} env
+ */
+function restoreTmuxLocalOption(scopeArgs, target, option, value, env) {
+  if (value === null) {
+    tmuxChecked(
+      ["set-option", "-u", ...scopeArgs, "-t", target, option],
+      env,
+    );
+    return;
+  }
+  tmuxChecked(
+    ["set-option", ...scopeArgs, "-t", target, option, value],
+    env,
+  );
+}
+
+/**
+ * @param {string} table
+ * @param {string} key
+ * @param {string | null} binding
+ * @param {NodeJS.ProcessEnv} env
+ */
+function restoreTmuxKeyBinding(table, key, binding, env) {
+  tmuxChecked(["unbind-key", "-q", "-T", table, key], env);
+  if (!binding) {
+    return;
+  }
+
+  const restored = spawnSync("tmux", ["source-file", "-"], {
+    encoding: "utf8",
+    env,
+    input: `${binding}\n`,
+  });
+  if (restored.status !== 0) {
+    throw new Error(
+      `tmux ${table} ${key} binding restore failed: ${(restored.stderr || restored.error?.message || "unknown error").trim()}`,
+    );
   }
 }
 
